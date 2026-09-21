@@ -1,0 +1,7 @@
+build/
+build-make/
+external/
+.DS_Store
+
+# Standalone test binaries (built by hand outside cmake)
+dsptests
