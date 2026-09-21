@@ -5,6 +5,7 @@
 #include "SampleDrumEditor.h"
 
 #include "SampleDrumController.h"
+#include "SampleDrumDsp.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -41,6 +42,48 @@ CRect SampleDrumEditor::cellRect (int column, int row) const
 	const CCoord x = kGridLeft + column * (kCellWidth + kCellGap);
 	const CCoord y = kGridTop + row * (kCellHeight + kCellGap);
 	return CRect (x, y, x + kCellWidth, y + kCellHeight);
+}
+
+//------------------------------------------------------------------------
+CRect SampleDrumEditor::wellRect (int column, int row) const
+{
+	CRect r = cellRect (column, row);
+	r.bottom = r.top + kWellHeight;
+	return r;
+}
+
+//------------------------------------------------------------------------
+CRect SampleDrumEditor::levelRect (int column, int row) const
+{
+	CRect r = cellRect (column, row);
+	r.top = r.bottom - kLevelHeight;
+	return r;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::showLevelOverlay (ParamID tag, double normalized)
+{
+	const int cell = cellOfLevelParam (tag);
+	if (!isCellIndex (cell) || mCells[cell] == nullptr)
+		return;
+
+	// From the parameter's own table and the DSP's own silence test, so
+	// the cell, the host and the audio cannot disagree about the setting.
+	const double db = paramDef (tag).toPlain (normalized);
+	char text[32] = {};
+	if (cellLevelGain (db) <= 0.0)
+		std::snprintf (text, sizeof (text), "off");
+	else
+		std::snprintf (text, sizeof (text), "%+.1f dB", db);
+	mCells[cell]->setOverlay (text);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::clearLevelOverlay (ParamID tag)
+{
+	const int cell = cellOfLevelParam (tag);
+	if (isCellIndex (cell) && mCells[cell])
+		mCells[cell]->setOverlay (std::string ());
 }
 
 //------------------------------------------------------------------------
@@ -96,7 +139,7 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 		for (int column = 0; column < kColumns; ++column)
 		{
 			const int cell = cellIndex (column, row);
-			auto* view = new SampleDrumCellView (cellRect (column, row), cell);
+			auto* view = new SampleDrumCellView (wellRect (column, row), cell);
 
 			// Both handlers go THROUGH THE CONTROLLER, which writes back to
 			// this cell and to the same cell in any other open editor.
@@ -114,6 +157,15 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 			mCells[cell] = view;
 			frame->addView (view);
 			refreshCell (cell);
+
+			// THE LEVEL BAR under it - an ordinary parameter control.
+			auto* level = new SampleDrumLevelBar (levelRect (column, row), this,
+			                                      static_cast<int32_t> (cellLevelParam (cell)), cell);
+			if (mController)
+				level->setValueNormalized (
+					static_cast<float> (mController->getParamNormalized (cellLevelParam (cell))));
+			mLevels[cell] = level;
+			frame->addView (level);
 		}
 	}
 
@@ -136,7 +188,8 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 
 	addLabel (CRect (kGridLeft + kSliderWidth + 12, kSliderTop, kEditorWidth - kMargin,
 	                 kSliderTop + kSliderHeight),
-	          "Drop .wav files on the cells.  Click to play, Option-click to empty.",
+	          "Drop .wav files on the cells.  Click to play, Option-click to empty.  "
+	          "Drag the bar under a cell for its level.",
 	          kValue, kLeftText);
 
 	mTimer = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) { onTimer (); }, kTimerMs, true);
@@ -152,6 +205,8 @@ void PLUGIN_API SampleDrumEditor::close ()
 
 	for (auto*& cell : mCells)
 		cell = nullptr;
+	for (auto*& level : mLevels)
+		level = nullptr;
 	mTrim = nullptr;
 	mHaveHits = false;
 
@@ -173,20 +228,37 @@ void SampleDrumEditor::valueChanged (CControl* control)
 
 	mController->setParamNormalized (tag, value);
 	mController->performEdit (tag, value);
+
+	if (isCellLevelParam (tag))
+		showLevelOverlay (tag, value);
 }
 
 //------------------------------------------------------------------------
 void SampleDrumEditor::controlBeginEdit (CControl* control)
 {
-	if (mController && control)
-		mController->beginEdit (static_cast<ParamID> (control->getTag ()));
+	if (mController == nullptr || control == nullptr)
+		return;
+
+	const ParamID tag = static_cast<ParamID> (control->getTag ());
+	mController->beginEdit (tag);
+
+	// The readout appears when the gesture STARTS, so a bar pressed and
+	// not yet moved already says what it is set to.
+	if (isCellLevelParam (tag))
+		showLevelOverlay (tag, control->getValueNormalized ());
 }
 
 //------------------------------------------------------------------------
 void SampleDrumEditor::controlEndEdit (CControl* control)
 {
-	if (mController && control)
-		mController->endEdit (static_cast<ParamID> (control->getTag ()));
+	if (mController == nullptr || control == nullptr)
+		return;
+
+	const ParamID tag = static_cast<ParamID> (control->getTag ());
+	mController->endEdit (tag);
+
+	if (isCellLevelParam (tag))
+		clearLevelOverlay (tag);
 }
 
 //------------------------------------------------------------------------
@@ -196,6 +268,13 @@ void SampleDrumEditor::updateControl (ParamID tag, ParamValue normalized)
 	{
 		mTrim->setValueNormalized (static_cast<float> (normalized));
 		mTrim->invalid ();
+	}
+
+	const int cell = cellOfLevelParam (tag);
+	if (isCellIndex (cell) && mLevels[cell])
+	{
+		mLevels[cell]->setValueNormalized (static_cast<float> (normalized));
+		mLevels[cell]->invalid ();
 	}
 }
 

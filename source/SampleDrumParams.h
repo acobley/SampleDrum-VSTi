@@ -29,6 +29,8 @@
 
 #pragma once
 
+#include "SampleDrumKit.h"
+
 #include "pluginterfaces/vst/vsttypes.h"
 
 namespace SampleDrum {
@@ -49,7 +51,22 @@ enum Param : Steinberg::Vst::ParamID
 	    instrument wants one. */
 	kOutputTrim = 0,
 
-	kNumParams,
+	//--------------------------------------------------------------------
+	/** A LEVEL PER CELL, in dB - the bar under each cell on the panel,
+	    as Project6 has under each pad.
+
+	    32 ordinary automatable parameters, ids 1..32, in CELL ORDER
+	    (column + row * 8, the order the paths are saved in), so
+	    cellLevelParam (cell) is kCellLevelBase + cell and nothing needs a
+	    lookup. Settings, not events: a project reopens with the balance
+	    it was saved with, and they ride the ordinary parameter block of
+	    the state stream.
+
+	    Appended after kOutputTrim, never before it - see below. */
+	kCellLevelBase,
+	kCellLevelEnd = kCellLevelBase + kCellCount,
+
+	kNumParams = kCellLevelEnd,
 
 	//--------------------------------------------------------------------
 	/** Standard VST3 bypass.
@@ -85,6 +102,27 @@ enum Param : Steinberg::Vst::ParamID
     immediately before kNumParams, and a parameter that is no longer
     wanted is left in place and hidden rather than removed. */
 constexpr int kFirstFreeParamSlot = kNumParams;
+
+//------------------------------------------------------------------------
+constexpr Steinberg::Vst::ParamID cellLevelParam (int cell)
+{
+	return static_cast<Steinberg::Vst::ParamID> (kCellLevelBase + cell);
+}
+
+constexpr bool isCellLevelParam (Steinberg::Vst::ParamID id)
+{
+	return id >= static_cast<Steinberg::Vst::ParamID> (kCellLevelBase)
+	       && id < static_cast<Steinberg::Vst::ParamID> (kCellLevelEnd);
+}
+
+/** The cell a level parameter belongs to, or -1. */
+constexpr int cellOfLevelParam (Steinberg::Vst::ParamID id)
+{
+	return isCellLevelParam (id) ? static_cast<int> (id - kCellLevelBase) : -1;
+}
+
+static_assert (kCellLevelBase == 1, "the cell levels follow the trim");
+static_assert (kNumParams == 1 + kCellCount, "trim + one level per cell");
 
 //------------------------------------------------------------------------
 enum class ParamType

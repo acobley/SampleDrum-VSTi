@@ -50,6 +50,12 @@ public:
 	/** How the file read, as the processor reported it. */
 	void setStatus (SampleStatus status);
 
+	/** Show this INSTEAD of the name until set back to "". It exists for
+	    the level bar underneath, which has no room for a number: while
+	    the bar is dragged the cell reads out the level - Project6's trick,
+	    using space that is already there. */
+	void setOverlay (const std::string& text);
+
 	/** From the editor's timer: `lit` 0..1, the lamp's brightness. */
 	void setLamp (float lit);
 
@@ -84,6 +90,7 @@ private:
 
 	int mCell = 0;
 	std::string mPath;
+	std::string mOverlay;
 	SampleStatus mStatus = SampleStatus::Empty;
 	float mLamp = 0.f;
 	bool mDragOver = false;

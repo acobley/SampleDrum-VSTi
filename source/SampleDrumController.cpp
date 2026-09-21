@@ -56,6 +56,14 @@ public:
 			// centre hard to find at a glance.
 			std::snprintf (text, sizeof (text), "%+.1f", mDef.toPlain (normalized));
 		}
+		else if (isCellLevelParam (mDef.id))
+		{
+			// A NUMBER EVEN AT THE BOTTOM, where the cell is silent: the
+			// validator reads this text back through the default
+			// string-to-value conversion, and "off" would not survive the
+			// trip. The panel says "off" instead - see the editor.
+			std::snprintf (text, sizeof (text), "%.1f", mDef.toPlain (normalized));
+		}
 		else
 		{
 			std::snprintf (text, sizeof (text), "%.2f", mDef.toPlain (normalized));

@@ -831,8 +831,113 @@ static void testDegenerateBlocks ()
 	check (std::isfinite (dsp.currentTrimGain ()), "trim gain is still finite");
 }
 
+
 //------------------------------------------------------------------------
-// 15. The output level
+// 15. Each cell's own level
+//------------------------------------------------------------------------
+static void testCellLevels ()
+{
+	std::printf ("cell levels\n");
+
+	// The law, at both ends and the middle.
+	check (cellLevelGain (kCellLevelMinDb) == 0.0, "the bottom of the bar is SILENCE, not -40 dB");
+	check (cellLevelGain (-100.0) == 0.0, "below the bottom is silence too");
+	check (cellLevelGain (0.0) == 1.0, "0 dB is exactly unity");
+	checkClose (cellLevelGain (-6.0), 0.501187234, 1e-9, "-6 dB");
+	checkClose (cellLevelGain (-39.9), dbToGain (-39.9), 1e-12, "just above the bottom is a real (tiny) level");
+	checkClose (cellLevelGain (kCellLevelMaxDb), 3.981071706, 1e-9, "+12 dB (top of range)");
+	checkClose (cellLevelGain (40.0), dbToGain (kCellLevelMaxDb), 1e-12, "above the top is clamped");
+	check (kCellLevelDefaultDb == 0.0, "every cell defaults to unity - a new kit plays its files as they are");
+
+	// A settled level scales a hit; neighbours are untouched.
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		auto s = makeSample (1000, 0.5f);
+		dsp.setCellSample (cellIndex (0, 3), s.get ());
+		dsp.setCellSample (cellIndex (1, 3), s.get ());
+		dsp.setCellLevelDb (cellIndex (0, 3), -6.0);
+		dsp.reset ();   // settle
+
+		dsp.noteOn (36, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 256, 256);
+		checkClose (l[100], 0.5 * dbToGain (-6.0), 1e-6, "kick cell at -6 dB plays at -6 dB");
+
+		dsp.noteOn (38, 1.f, 0);
+		SampleDrumDsp fresh;   // (the kick is still ringing in dsp)
+		fresh.setSampleRate (48000.0);
+		fresh.setCellSample (cellIndex (1, 3), s.get ());
+		fresh.noteOn (38, 1.f, 0);
+		renderInto (fresh, l, r, 256, 256);
+		check (l[100] == 0.5f, "the snare cell next to it is still at unity, bit for bit");
+
+		// Two voices on one cell get the SAME gain.
+		SampleDrumDsp two;
+		two.setSampleRate (48000.0);
+		two.setCellSample (0, s.get ());
+		two.setCellLevelDb (0, -6.0);
+		two.reset ();
+		two.noteOn (36, 0.1f, 0);
+		two.noteOn (36, 0.1f, 0);
+		renderInto (two, l, r, 256, 256);
+		checkClose (l[100], 2 * 0.5 * dbToGain (-6.0), 1e-6, "two voices on one cell share its level");
+	}
+
+	// Pulled to the bottom: silent.
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		auto s = makeSample (1000, 0.5f);
+		dsp.setCellSample (0, s.get ());
+		dsp.setCellLevelDb (0, kCellLevelMinDb);
+		dsp.reset ();
+		dsp.noteOn (36, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 256);
+		check (peakOf (l) == 0.f, "a cell pulled to the bottom is exactly silent");
+	}
+
+	// Moved WHILE A SAMPLE RINGS: smoothed at every rate, and it arrives.
+	for (double rate : kRates)
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (rate);
+		const int frames = static_cast<int> (rate * 2);
+		auto s = makeSample (frames, 0.5f, rate);
+		dsp.setCellSample (0, s.get ());
+		dsp.noteOn (36, 1.f, 0);
+
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 512);
+		dsp.setCellLevelDb (0, kCellLevelMinDb);   // yank it to off
+		renderInto (dsp, l, r, static_cast<int> (rate), 64);   // small blocks, many ramps
+
+		float worst = std::fabs (l[0] - 0.5f);
+		for (std::size_t i = 1; i < l.size (); ++i)
+			worst = std::max (worst, std::fabs (l[i] - l[i - 1]));
+		check (worst <= 0.5f * 0.011f,
+		       "a level move never steps more than ~1% per sample at " + str (static_cast<int> (rate)));
+		check (l.back () == 0.f && dsp.currentCellGain (0) == 0.f,
+		       "and it arrives - exactly silent within a second at " + str (static_cast<int> (rate)));
+
+		dsp.setCellLevelDb (0, 0.0);
+		renderInto (dsp, l, r, static_cast<int> (rate) / 2, 512);
+		check (dsp.currentCellGain (0) == 1.f, "back up, it arrives at exactly unity at " + str (static_cast<int> (rate)));
+	}
+
+	// Bad cell indices are ignored.
+	{
+		SampleDrumDsp dsp;
+		dsp.setCellLevelDb (-1, -6.0);
+		dsp.setCellLevelDb (kCellCount, -6.0);
+		check (dsp.currentCellGain (-1) == 0.f && dsp.cellLevelDb (99) == kCellLevelDefaultDb,
+		       "out-of-range cells are safe");
+	}
+}
+
+//------------------------------------------------------------------------
+// 16. The output level
 //------------------------------------------------------------------------
 static void measureLevels ()
 {
@@ -905,6 +1010,7 @@ int main ()
 	testReplacement ();
 	testVoiceLimit ();
 	testDegenerateBlocks ();
+	testCellLevels ();
 	measureLevels ();
 
 	std::printf ("--------------------\n");

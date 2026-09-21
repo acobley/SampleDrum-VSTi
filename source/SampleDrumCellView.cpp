@@ -95,6 +95,15 @@ void SampleDrumCellView::setStatus (SampleStatus status)
 }
 
 //------------------------------------------------------------------------
+void SampleDrumCellView::setOverlay (const std::string& text)
+{
+	if (mOverlay == text)
+		return;
+	mOverlay = text;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
 void SampleDrumCellView::setLamp (float lit)
 {
 	// Quantised, so a lamp decaying through tiny steps does not redraw
@@ -156,6 +165,16 @@ void SampleDrumCellView::draw (CDrawContext* context)
 	context->setFont (panelFont ());
 	const CCoord lineHeight = panelFont ()->getSize () + 3.;
 	const CCoord width = r.getWidth () - 8.;
+
+	// THE OVERLAY WINS: while the bar below is dragged, the level is what
+	// the reader wants, and the name will be back when the drag ends.
+	if (!mOverlay.empty ())
+	{
+		context->setFontColor (kText);
+		context->drawString (mOverlay.c_str (), r, kCenterText, true);
+		setDirty (false);
+		return;
+	}
 
 	if (mPath.empty ())
 	{

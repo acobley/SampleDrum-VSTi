@@ -63,6 +63,10 @@ SampleDrumDsp::SampleDrumDsp ()
 		mCells[cell].store (nullptr, std::memory_order_relaxed);
 		mHits[cell].store (0u, std::memory_order_relaxed);
 		mSounding[cell].store (false, std::memory_order_relaxed);
+
+		mCellLevelDb[cell] = kCellLevelDefaultDb;
+		mCellTarget[cell] = static_cast<float> (cellLevelGain (kCellLevelDefaultDb));
+		mCellGain[cell] = mCellGainStart[cell] = mCellGainEnd[cell] = mCellTarget[cell];
 	}
 
 	// Usable before setupProcessing, because a host may call process()
@@ -83,6 +87,7 @@ void SampleDrumDsp::setSampleRate (double sampleRate)
 	// starts, from this rate, so it cannot go stale.
 	mTrim.setSampleRate (mSampleRate, kTrimSmoothingSeconds);
 	mFadeSamples = std::max (1, static_cast<int> (kChokeFadeSeconds * mSampleRate + 0.5));
+	mCellLevelCoeff = 1.0 - std::exp (-1.0 / (kCellLevelSmoothingSeconds * mSampleRate));
 
 	reset ();
 }
@@ -105,6 +110,10 @@ void SampleDrumDsp::reset ()
 		voice = Voice ();
 	mPendingCount = 0;
 
+	// Cell levels SNAP too, for the trim's reason.
+	for (int cell = 0; cell < kCellCount; ++cell)
+		mCellGain[cell] = mCellGainStart[cell] = mCellGainEnd[cell] = mCellTarget[cell];
+
 	for (auto& sounding : mSounding)
 		sounding.store (false, std::memory_order_relaxed);
 }
@@ -114,6 +123,53 @@ void SampleDrumDsp::setOutputTrimDb (double db)
 {
 	mTrimDb = db;
 	mTrim.setTarget (static_cast<float> (dbToGain (db)));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::setCellLevelDb (int cell, double db)
+{
+	if (!isCellIndex (cell))
+		return;
+	mCellLevelDb[cell] = db;
+	mCellTarget[cell]  = static_cast<float> (cellLevelGain (db));
+}
+
+//------------------------------------------------------------------------
+double SampleDrumDsp::cellLevelDb (int cell) const
+{
+	return isCellIndex (cell) ? mCellLevelDb[cell] : kCellLevelDefaultDb;
+}
+
+//------------------------------------------------------------------------
+float SampleDrumDsp::currentCellGain (int cell) const
+{
+	return isCellIndex (cell) ? mCellGain[cell] : 0.f;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::advanceCellGains (int numSamples)
+{
+	// n samples of the one-pole in closed form: the distance left shrinks
+	// by (1 - c)^n. Voices then ramp LINEARLY between the two ends, which
+	// never steps further per sample than the one-pole itself would.
+	const double keep = std::pow (1.0 - mCellLevelCoeff, static_cast<double> (numSamples));
+
+	for (int cell = 0; cell < kCellCount; ++cell)
+	{
+		const float start  = mCellGain[cell];
+		const float target = mCellTarget[cell];
+		float end = static_cast<float> (target + (start - target) * keep);
+
+		// ARRIVE EXACTLY. A gain left at 0.9999999 instead of 1 would end
+		// the bit-identity of a hit at 0 dB, and one hovering just above
+		// zero would never let a bar at the bottom be silent.
+		if (std::fabs (end - target) < 1e-6f)
+			end = target;
+
+		mCellGainStart[cell] = start;
+		mCellGainEnd[cell]   = end;
+		mCellGain[cell]      = end;
+	}
 }
 
 //------------------------------------------------------------------------
@@ -320,6 +376,14 @@ void SampleDrumDsp::renderVoices (float* left, float* right, int from, int to)
 		const float* data   = voice.sample->samples.data ();
 		const int    frames = voice.sample->frameCount;
 
+		// THE CELL'S LEVEL, ramped across the whole block (not this
+		// segment of it), so a voice started half way through the block
+		// picks the ramp up where it has got to.
+		const float gainStart = mCellGainStart[voice.cell];
+		const float gainStep  = (mBlockLength > 0)
+			? (mCellGainEnd[voice.cell] - gainStart) / static_cast<float> (mBlockLength)
+			: 0.f;
+
 		for (int i = from; i < to; ++i)
 		{
 			const int frame = static_cast<int> (voice.position);
@@ -339,8 +403,12 @@ void SampleDrumDsp::renderVoices (float* left, float* right, int from, int to)
 			const float  nextL = last ? 0.f : a[kSampleChannels];
 			const float  nextR = last ? 0.f : a[kSampleChannels + 1];
 
-			float l = a[0] + (nextL - a[0]) * frac;
-			float r = a[1] + (nextR - a[1]) * frac;
+			// At a settled level gainStep is exactly 0 and the gain is the
+			// target itself - 1.0 at 0 dB, so unity stays bit-identical.
+			const float gain = gainStart + gainStep * static_cast<float> (i + 1);
+
+			float l = (a[0] + (nextL - a[0]) * frac) * gain;
+			float r = (a[1] + (nextR - a[1]) * frac) * gain;
 
 			if (voice.fadeLeft > 0)
 			{
@@ -381,6 +449,9 @@ void SampleDrumDsp::render (float* left, float* right, int numSamples)
 
 	std::fill (left, left + numSamples, 0.f);
 	std::fill (right, right + numSamples, 0.f);
+
+	mBlockLength = numSamples;
+	advanceCellGains (numSamples);
 
 	// SAMPLE-ACCURATE: render up to each hit's offset, start it, carry on.
 	// An offset past the end of this block is a host bug; it plays on the

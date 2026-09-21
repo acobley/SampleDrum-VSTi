@@ -43,6 +43,7 @@
 #include "SampleDrumKit.h"
 #include "SampleDrumSample.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -107,10 +108,39 @@ inline double dbToGain (double db)
 	return (db == 0.0) ? 1.0 : std::pow (10.0, db / 20.0);
 }
 
+//------------------------------------------------------------------------
+// A cell's own level
+//
+// -40 to +12 dB, Project6's slot-level range, and for its reason: this is
+// a COMPONENT level inside a kit, not the master. A quiet sample needs a
+// way up, and the stage that answers clipping is the Output Trim.
+//
+// THE BOTTOM OF TRAVEL IS SILENCE, not -40 dB of leakage: a bar pulled
+// all the way down is off. cellLevelGain() is the one place that says so;
+// the DSP scales by it and the panel reads "off" from the same test.
+//------------------------------------------------------------------------
+constexpr double kCellLevelMinDb     = -40.0;
+constexpr double kCellLevelMaxDb     =  12.0;
+constexpr double kCellLevelDefaultDb =   0.0;
+
+/** How long a cell's level takes to follow its bar - the same as the
+    trim, and for the same reason: no zipper noise on a sample that is
+    ringing while the bar moves. */
+constexpr double kCellLevelSmoothingSeconds = kTrimSmoothingSeconds;
+
 /** And back, with a floor so silence does not return -inf. */
 inline double gainToDb (double gain)
 {
 	return (gain <= 1e-9) ? -180.0 : 20.0 * std::log10 (gain);
+}
+
+/** A cell level in dB to the gain applied: dbToGain, clamped to the
+    range, and EXACTLY ZERO at the bottom of it. */
+inline double cellLevelGain (double db)
+{
+	if (!(db > kCellLevelMinDb))
+		return 0.0;
+	return dbToGain (std::min (kCellLevelMaxDb, db));
 }
 
 //------------------------------------------------------------------------
@@ -156,6 +186,14 @@ public:
 	/** The output trim, in dB. Smoothed. */
 	void setOutputTrimDb (double db);
 	double outputTrimDb () const { return mTrimDb; }
+
+	/** A cell's level, in dB (the parameter's plain value). Applies at
+	    once to anything that cell is playing, smoothed. */
+	void setCellLevelDb (int cell, double db);
+	double cellLevelDb (int cell) const;
+
+	/** The gain the cell is at right now, after smoothing - for tests. */
+	float currentCellGain (int cell) const;
 
 	//--------------------------------------------------------------------
 	// Samples - UI THREAD
@@ -253,6 +291,7 @@ private:
 	void startVoice (int cell, int column);
 	void beginFade (Voice& voice, int samples);
 	void renderVoices (float* left, float* right, int from, int to);
+	void advanceCellGains (int numSamples);
 	unsigned int loadedMask () const;
 
 	double mSampleRate   = 44100.0;
@@ -261,6 +300,18 @@ private:
 	int    mFadeSamples  = 220;
 
 	Smoother mTrim;
+
+	/** Per-cell level. Advanced ONCE PER BLOCK in closed form, and every
+	    voice on the cell ramps linearly from mCellGainStart to
+	    mCellGainEnd across the block - so two voices on one cell see the
+	    same gain, and the smoother is not stepped once per voice. */
+	double mCellLevelDb[kCellCount];
+	float  mCellTarget[kCellCount];
+	float  mCellGain[kCellCount];
+	float  mCellGainStart[kCellCount];
+	float  mCellGainEnd[kCellCount];
+	double mCellLevelCoeff = 1.0;   // per-sample one-pole coefficient
+	int    mBlockLength = 0;        // of the block render() is in
 
 	/** What the audio thread reads. Release-stored by setCellSample,
 	    acquire-loaded when a voice starts. */

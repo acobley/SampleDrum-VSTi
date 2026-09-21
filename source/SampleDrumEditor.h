@@ -27,6 +27,7 @@
 
 #include "SampleDrumCellView.h"
 #include "SampleDrumControls.h"
+#include "SampleDrumLevelBar.h"
 #include "SampleDrumKit.h"
 #include "SampleDrumParams.h"
 
@@ -73,7 +74,10 @@ public:
 	static constexpr int kTitleHeight = 22;
 	static constexpr int kRowLabelWidth = 76;
 	static constexpr int kCellWidth   = 100;
-	static constexpr int kCellHeight  = 58;
+	static constexpr int kCellHeight  = 58;     // well + gap + level bar
+	static constexpr int kLevelHeight = 10;     // the bar under each cell
+	static constexpr int kLevelGap    = 2;
+	static constexpr int kWellHeight  = kCellHeight - kLevelGap - kLevelHeight;
 	static constexpr int kCellGap     = 6;
 	static constexpr int kHeaderHeight = 34;
 	static constexpr int kSliderWidth  = 96;    // SpySlider's own size, as in Project6
@@ -101,7 +105,14 @@ public:
 	static constexpr float kSoundingLamp = 0.45f;
 
 private:
+	/** The whole cell - well AND bar. */
 	VSTGUI::CRect cellRect (int column, int row) const;
+	VSTGUI::CRect wellRect (int column, int row) const;
+	VSTGUI::CRect levelRect (int column, int row) const;
+
+	/** While a level bar is moving, its cell reads out the level. */
+	void showLevelOverlay (Steinberg::Vst::ParamID tag, double normalized);
+	void clearLevelOverlay (Steinberg::Vst::ParamID tag);
 	void onTimer ();
 	void addLabel (const VSTGUI::CRect& rect, const std::string& text,
 	               const VSTGUI::CColor& colour, VSTGUI::CHoriTxtAlign align);
@@ -109,6 +120,7 @@ private:
 	SampleDrumController* mController = nullptr;
 
 	SampleDrumCellView* mCells[kCellCount] = {};
+	SampleDrumLevelBar* mLevels[kCellCount] = {};
 	SpySlider* mTrim = nullptr;
 
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> mTimer;

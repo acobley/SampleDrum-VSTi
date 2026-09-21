@@ -42,6 +42,7 @@ This file outlives the session. Add to it as you go, not at the end.
 | Polyphony | 32 voices + 8 spares; the oldest is stolen with a 5 ms fade | The spares let a stolen voice fade instead of clicking. |
 | Sample rate | Linear interpolation to the host rate; step exactly 1 when rates match | At equal rates the output is the file's own samples, bit for bit. |
 | Files | WAV only: PCM 8/16/24/32, float 32/64, extensible, any channel count (mono duplicated); **20 s cap** | Reader lifted from Project6 without the tempo/MIDI parts. |
+| Cell level (third commit) | **A level bar under every cell**, as under each Project6 pad: −40 to +12 dB, default 0 dB, **the bottom of the bar is silence**. 32 automatable parameters, ids 1–32 in cell order (`cellLevelParam (cell)`), titled e.g. "Kick 96-127 Level". Applies live to a ringing sample, smoothed like the trim. Drag with Shift for fine; while dragging, the cell reads out the level ("off" at the bottom). | Project6's range and law, for its reason: a component level that may need lifting, in front of the Output Trim that answers clipping. |
 | Panel | Click a loaded cell = audition; **Option-click = empty it**; cells light while sounding and **flash on every hit** | A modifier for clearing, so a stray click cannot lose a sample. Hit counting so a hi-hat shorter than one redraw still shows. |
 
 ---
@@ -160,6 +161,15 @@ negative controls (half gain) are confirmed *not* identical.
   `setState` and `setComponentState` arrive in either order.
 - **A failed load keeps its path**, shows it in red with the reason, and
   the project remembers it (the drive may just be unplugged).
+- **A cell's level is smoothed once per block, not once per voice.** The
+  one-pole is advanced in closed form over the block and every voice on
+  the cell ramps linearly between the two ends, so two voices on one cell
+  hear the same gain and a hit starting mid-block joins the ramp where it
+  is. It **arrives exactly** (snaps within 1e-6), so 0 dB stays
+  bit-identical and the bottom of the bar is truly silent.
+- **The host sees a number even at the bottom of a level bar** ("-40.0"),
+  because the validator reads parameter text back through the default
+  string-to-value conversion; only the panel says "off".
 - **Silence flags are set only when the block really is silent** —
   checked per block, not assumed.
 
@@ -181,6 +191,18 @@ because VSTGUI never calls `onDragLeave` after a drop.
 ---
 
 ## 7. Verification actually run (2026-09-21, from the Linux VM)
+
+### Third commit — a level per cell
+
+All eleven `.cpp` files compile against the SDK and VSTGUI; `nm -C`
+shows **0 unresolved `SampleDrum::` symbols** out of 47. DSP suite:
+**321 checks, 0 failures** — the 290 before, plus the level law at both
+ends, silence at the bottom, a settled level scaling a hit, neighbours
+untouched and still bit-identical, two voices sharing a cell's gain, and
+a level yanked to off under a ringing sample at every rate from 44.1 k to
+192 k (no step over ~1 % per sample; arrives at exactly 0, and back at
+exactly 1). The output measurements in §4 are unchanged: levels default
+to 0 dB.
 
 ### Second commit — the drum engine and grid
 

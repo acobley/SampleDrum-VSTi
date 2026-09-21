@@ -137,6 +137,14 @@ void SampleDrumProcessor::applyParam (ParamID id, double normalized)
 	mParams[id] = normalized;
 	const ParamDef& def = paramDef (id);
 
+	// THE 32 CELL LEVELS, by range rather than 32 case labels, so a cell
+	// cannot be wired to its neighbour's bar.
+	if (isCellLevelParam (id))
+	{
+		mDsp.setCellLevelDb (cellOfLevelParam (id), def.toInternal (normalized));
+		return;
+	}
+
 	switch (id)
 	{
 		case kOutputTrim:
