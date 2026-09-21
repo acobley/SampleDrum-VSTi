@@ -195,6 +195,15 @@ public:
 	/** The gain the cell is at right now, after smoothing - for tests. */
 	float currentCellGain (int cell) const;
 
+	/** The MIDI note that plays a column. Defaults to kDrumMap. Several
+	    columns may share a note, and then ONE HIT PLAYS ALL OF THEM -
+	    layering two drums is a thing people do on purpose, and the
+	    alternative (only the leftmost plays) would be a column that
+	    silently stops working when its note is duplicated. Out-of-range
+	    notes are clamped to 0..127. */
+	void setColumnNote (int column, int note);
+	int columnNote (int column) const;
+
 	//--------------------------------------------------------------------
 	// Samples - UI THREAD
 	//--------------------------------------------------------------------
@@ -259,9 +268,13 @@ public:
 	int activeVoices () const;
 
 	/** Which cell the kit's rules would play for this note and velocity
-	    RIGHT NOW, or -1. The same code path noteOn uses, exposed so the
-	    tests assert the rule rather than a copy of it. */
+	    RIGHT NOW in the LEFTMOST column with that note, or -1. The same
+	    rules noteOn uses, exposed so the tests assert the rule rather
+	    than a copy of it. */
 	int cellForNote (int note, float velocity01) const;
+
+	/** Which columns a note plays right now, one bit per column. */
+	unsigned int columnsForNote (int note) const;
 
 private:
 	struct Voice
@@ -289,6 +302,7 @@ private:
 	};
 
 	void startVoice (int cell, int column);
+	void queueHit (int offset, int cell, int column);
 	void beginFade (Voice& voice, int samples);
 	void renderVoices (float* left, float* right, int from, int to);
 	void advanceCellGains (int numSamples);
@@ -312,6 +326,11 @@ private:
 	float  mCellGainEnd[kCellCount];
 	double mCellLevelCoeff = 1.0;   // per-sample one-pole coefficient
 	int    mBlockLength = 0;        // of the block render() is in
+
+	/** Each column's note. Plain ints: written by applyParam on the audio
+	    thread (and by setState, whose worst case is one hit read against
+	    the old note). */
+	int mColumnNote[kColumns];
 
 	/** What the audio thread reads. Release-stored by setCellSample,
 	    acquire-loaded when a voice starts. */

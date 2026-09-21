@@ -145,6 +145,14 @@ void SampleDrumProcessor::applyParam (ParamID id, double normalized)
 		return;
 	}
 
+	// THE 8 COLUMN NOTES, likewise by range. noteFromNormalized is the
+	// rounding the panel and the host text use too.
+	if (isColumnNoteParam (id))
+	{
+		mDsp.setColumnNote (columnOfNoteParam (id), noteFromNormalized (normalized));
+		return;
+	}
+
 	switch (id)
 	{
 		case kOutputTrim:

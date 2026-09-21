@@ -25,6 +25,8 @@
 
 #pragma once
 
+#include <cstdio>
+
 namespace SampleDrum {
 
 constexpr int kColumns   = 8;
@@ -47,12 +49,14 @@ struct DrumColumn
 	const char* name;       // never null
 };
 
-/** THE GENERAL MIDI PERCUSSION MAP, eight of it, left to right.
+/** THE GENERAL MIDI PERCUSSION MAP, eight of it, left to right - the
+    DEFAULT note of each column and the drum it is named after.
 
-    Fixed, by choice: every drum sequencer and e-kit already sends these
-    numbers, so a pattern written for any GM kit plays the right drum
-    here with no setup. Making them parameters later is an APPEND to the
-    parameter table - nothing here would move.
+    Every drum sequencer and e-kit already sends these numbers, so a new
+    instance plays any GM pattern with no setup. Each column's note is
+    now a parameter (kColumnNoteBase + column, the box at the top of the
+    column) and these are its defaults; the NAMES stay fixed, because a
+    column is still "the kick column" when it is moved to note 35.
 
     42 AND 46 ARE CHOKED - see chokes() below. They are next to each other
     on the panel for that reason. */
@@ -67,16 +71,50 @@ inline constexpr DrumColumn kDrumMap[kColumns] = {
 	{ 49, "Crash"     },
 };
 
-/** Which column a MIDI note plays, or -1 for a note that is not in the
-    map. An unmapped note is IGNORED, not folded onto a nearby drum: a
-    host sending 37 (side stick) should get silence, which is visibly a
-    mapping question, rather than a snare that sounds like a bug. */
-inline constexpr int columnForNote (int note)
+/** Which column a note plays IN THE DEFAULT MAP, or -1. The DSP does not
+    use this - it uses the columns' current notes - but the defaults are
+    worth pinning in the tests on their own. */
+inline constexpr int defaultColumnForNote (int note)
 {
 	for (int c = 0; c < kColumns; ++c)
 		if (kDrumMap[c].note == note)
 			return c;
 	return -1;
+}
+
+//------------------------------------------------------------------------
+// Note numbers and names
+//------------------------------------------------------------------------
+
+constexpr int kMinNote = 0;
+constexpr int kMaxNote = 127;
+
+/** The octave convention: MIDI 60 is C3 and 36 - the GM kick - is C1,
+    which is what Cubase, Logic and most drum-map tables print. (Some
+    hosts call 60 "C4"; the NUMBER is shown first so nobody has to know
+    which convention is in use.) */
+constexpr int kOctaveOfNoteZero = -2;
+
+/** "36 C1", "42 F#1", "0 C-2". ONE copy of the formatting, called by the
+    host's parameter text and by the panel's note box, so the two can never
+    show a column's note differently.
+
+    THE NUMBER COMES FIRST, deliberately: the host turns this text back
+    into a value by reading the leading number (the validator checks that
+    round trip), and "C1 (36)" would not survive it. */
+inline void formatNote (int note, char* out, int size)
+{
+	static const char* const kNames[12] = { "C", "C#", "D", "D#", "E", "F",
+	                                        "F#", "G", "G#", "A", "A#", "B" };
+	if (out == nullptr || size <= 0)
+		return;
+	if (note < kMinNote || note > kMaxNote)
+	{
+		std::snprintf (out, static_cast<size_t> (size), "%d", note);
+		return;
+	}
+	std::snprintf (out, static_cast<size_t> (size), "%d %s%d", note, kNames[note % 12],
+	               note / 12 + kOctaveOfNoteZero);
 }
 
 //------------------------------------------------------------------------
@@ -160,7 +198,8 @@ static_assert (kCellCount <= 32, "chooseCell's loaded mask is one bit per cell")
     playing.
 
     ONE PAIR, ONE DIRECTION: the closed hi-hat cuts the open one, as the
-    pedal does on a real kit. Not the other way round - an open hat struck
+    pedal does on a real kit. BY COLUMN, not by note: the hat columns
+    choke each other whatever notes they have been moved to. Not the other way round - an open hat struck
     while a closed one rings is two sounds, and a closed hat is too short
     for the difference to be heard anyway. A column never chokes itself:
     a second hit on the same drum OVERLAPS the first. */

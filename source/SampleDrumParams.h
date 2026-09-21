@@ -66,7 +66,23 @@ enum Param : Steinberg::Vst::ParamID
 	kCellLevelBase,
 	kCellLevelEnd = kCellLevelBase + kCellCount,
 
-	kNumParams = kCellLevelEnd,
+	//--------------------------------------------------------------------
+	/** THE NOTE EACH COLUMN ANSWERS TO - the box at the top of the column.
+
+	    8 parameters, ids 33..40, in column order, 0..127 in whole steps,
+	    defaulting to the GM notes in kDrumMap - so an instance that has
+	    never been touched plays exactly as before. Parameters rather than
+	    panel-only settings because this project's rule is that anything
+	    that is a number is a parameter: saved with the project, visible
+	    in the host, and never lost to an unconnected message. They are
+	    marked NOT AUTOMATABLE in the controller - re-mapping a drum
+	    mid-song is a way to lose hits, not a performance gesture.
+
+	    Appended after the levels, never among them. */
+	kColumnNoteBase = kCellLevelEnd,
+	kColumnNoteEnd  = kColumnNoteBase + kColumns,
+
+	kNumParams = kColumnNoteEnd,
 
 	//--------------------------------------------------------------------
 	/** Standard VST3 bypass.
@@ -121,8 +137,42 @@ constexpr int cellOfLevelParam (Steinberg::Vst::ParamID id)
 	return isCellLevelParam (id) ? static_cast<int> (id - kCellLevelBase) : -1;
 }
 
+constexpr Steinberg::Vst::ParamID columnNoteParam (int column)
+{
+	return static_cast<Steinberg::Vst::ParamID> (kColumnNoteBase + column);
+}
+
+constexpr bool isColumnNoteParam (Steinberg::Vst::ParamID id)
+{
+	return id >= static_cast<Steinberg::Vst::ParamID> (kColumnNoteBase)
+	       && id < static_cast<Steinberg::Vst::ParamID> (kColumnNoteEnd);
+}
+
+/** The column a note parameter belongs to, or -1. */
+constexpr int columnOfNoteParam (Steinberg::Vst::ParamID id)
+{
+	return isColumnNoteParam (id) ? static_cast<int> (id - kColumnNoteBase) : -1;
+}
+
+/** A note parameter's normalised value to its note, ROUNDED. The one
+    conversion the processor, the host text and the panel box share, so
+    a value between two steps cannot mean 36 in one place and 37 in
+    another. */
+inline int noteFromNormalized (double normalized)
+{
+	const double clamped = (normalized < 0.0) ? 0.0 : (normalized > 1.0 ? 1.0 : normalized);
+	return static_cast<int> (clamped * kMaxNote + 0.5);
+}
+
+inline double normalizedFromNote (int note)
+{
+	const int clamped = (note < kMinNote) ? kMinNote : (note > kMaxNote ? kMaxNote : note);
+	return static_cast<double> (clamped) / kMaxNote;
+}
+
 static_assert (kCellLevelBase == 1, "the cell levels follow the trim");
-static_assert (kNumParams == 1 + kCellCount, "trim + one level per cell");
+static_assert (kColumnNoteBase == 1 + kCellCount, "the column notes follow the levels");
+static_assert (kNumParams == 1 + kCellCount + kColumns, "trim + a level per cell + a note per column");
 
 //------------------------------------------------------------------------
 enum class ParamType

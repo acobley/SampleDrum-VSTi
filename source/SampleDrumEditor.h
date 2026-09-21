@@ -11,8 +11,12 @@
 //
 //     [ Output Trim ]
 //
-// EVERY LABEL IS COMPUTED, not typed: the column names and notes come from
-// kDrumMap and the row bands from bandLow/bandHigh in SampleDrumKit.h -
+// THE NOTE UNDER EACH DRUM'S NAME IS A CONTROL (SampleDrumNoteBox): the
+// column's note parameter, defaulting to the GM note.
+//
+// EVERY LABEL IS COMPUTED, not typed: the column names come from kDrumMap,
+// the notes from formatNote, and the row bands from bandLow/bandHigh in
+// SampleDrumKit.h -
 // the same functions the DSP uses to decide what plays. A panel that
 // printed its own "96-127" while the DSP split somewhere else would be
 // lying, and this is the arrangement that makes that impossible.
@@ -28,6 +32,7 @@
 #include "SampleDrumCellView.h"
 #include "SampleDrumControls.h"
 #include "SampleDrumLevelBar.h"
+#include "SampleDrumNoteBox.h"
 #include "SampleDrumKit.h"
 #include "SampleDrumParams.h"
 
@@ -112,6 +117,9 @@ private:
 
 	/** While a level bar is moving, its cell reads out the level. */
 	void showLevelOverlay (Steinberg::Vst::ParamID tag, double normalized);
+
+	/** Mark every note box whose note another column shares. */
+	void refreshSharedNotes ();
 	void clearLevelOverlay (Steinberg::Vst::ParamID tag);
 	void onTimer ();
 	void addLabel (const VSTGUI::CRect& rect, const std::string& text,
@@ -121,6 +129,7 @@ private:
 
 	SampleDrumCellView* mCells[kCellCount] = {};
 	SampleDrumLevelBar* mLevels[kCellCount] = {};
+	SampleDrumNoteBox*  mNotes[kColumns] = {};
 	SpySlider* mTrim = nullptr;
 
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> mTimer;

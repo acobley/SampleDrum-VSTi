@@ -35,7 +35,11 @@ public:
 	// the post-build step, which sends you looking at the build system.
 	// Empty string, never null.
 	: RangeParameter (USTRING (def.title), def.id, USTRING (def.units), def.plainMin, def.plainMax,
-	                  def.plainDefault, def.stepCount, ParameterInfo::kCanAutomate,
+	                  def.plainDefault, def.stepCount,
+	                  // A column's NOTE is a setting, not a performance
+	                  // gesture: automating it mid-song is a way to lose
+	                  // hits. Everything else can be automated.
+	                  isColumnNoteParam (def.id) ? 0 : ParameterInfo::kCanAutomate,
 	                  kRootUnitId, USTRING (def.title))
 	, mDef (def)
 	{
@@ -55,6 +59,12 @@ public:
 			// boosting and "-3.0 dB" when it is cutting makes the
 			// centre hard to find at a glance.
 			std::snprintf (text, sizeof (text), "%+.1f", mDef.toPlain (normalized));
+		}
+		else if (isColumnNoteParam (mDef.id))
+		{
+			// "36 C1": the number first, so the host's default text-to-value
+			// reading (and the validator's round trip) finds it.
+			formatNote (noteFromNormalized (normalized), text, static_cast<int> (sizeof (text)));
 		}
 		else if (isCellLevelParam (mDef.id))
 		{

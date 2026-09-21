@@ -34,7 +34,8 @@ This file outlives the session. Add to it as you go, not at the end.
 | | Decision | Why |
 |---|---|---|
 | Grid | 8 columns × 4 rows; cell = column + row × 8, **saved in that order** | The state stream saves 32 paths by position. That order is permanent once a build ships. |
-| Drum map | **Fixed GM**: Kick 36, Snare 38, Clap 39, Closed HH 42, Open HH 46, Low Tom 45, High Tom 50, Crash 49 | Any GM pattern plays the right drum with no setup. An unmapped note is **ignored**, not folded onto a neighbour. Making notes editable later is an *append* to the parameter table. |
+| Drum map | **GM defaults**: Kick 36, Snare 38, Clap 39, Closed HH 42, Open HH 46, Low Tom 45, High Tom 50, Crash 49 — **editable per column since the fourth commit** (see below) | Any GM pattern plays the right drum with no setup. A note no column has is **ignored**, not folded onto a neighbour. |
+| Column note (fourth commit) | **A note box at the top of each column** ("< 36 C1 >"): click an end to step a semitone (Shift: octave), drag up/down, scroll; Option-click back to the GM default. 8 parameters, ids 33–40, 0–127 in whole steps, defaults from `kDrumMap`; saved with the project; **not automatable** (re-mapping mid-song loses hits). **Two columns on one note both play** (layering) and both boxes turn amber. The choke stays **by column**, whatever notes the hats are on. Names stay fixed. Note names use 60 = C3 (36 = C1); the number is always shown first. | The number first because the host turns the text back into a value by reading the leading number — the validator's round trip. `noteFromNormalized` is the one rounding the processor, host text and panel share. |
 | Velocity → row | **Four equal bands**, top to bottom: 1–31, 32–63, 64–95, 96–127 | `velocity / 32`. Velocity 0 plays nothing (it is a note-off). |
 | Empty cell | Falls back to the **nearest loaded row in the same column**; a tie goes to the **softer** row | One sample in a column plays at every velocity. Erring quiet on a guess. Never borrows from another column. |
 | Playback | **One-shot**, unity gain (velocity picks the row only, it does not scale level); note-off ignored; a second hit on the same drum **overlaps** | What was asked for. |
@@ -191,6 +192,19 @@ because VSTGUI never calls `onDragLeave` after a drop.
 ---
 
 ## 7. Verification actually run (2026-09-21, from the Linux VM)
+
+### Fourth commit — a note per column
+
+All twelve `.cpp` files compile against the SDK and VSTGUI; **0
+unresolved `SampleDrum::` symbols** out of 51. DSP suite: **341 checks,
+0 failures** — adds note formatting (36 C1, 42 F#1, 60 C3, 0 C-2, 127 G8,
+number first), GM defaults, a moved column (old note silent, new note
+plays), a shared note layering both columns, the choke following
+columns not notes, and clamping. A separate check compiled against the
+SDK headers confirmed, for every note 0–127, that
+`noteFromNormalized (normalizedFromNote (n)) == n` and the text's leading
+number reads back as `n`; that each column's default is its GM note; and
+that every table row's id equals its index with non-null title and units.
 
 ### Third commit — a level per cell
 

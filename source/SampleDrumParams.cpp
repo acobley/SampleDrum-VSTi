@@ -72,6 +72,20 @@ const ParamDef kParams[kNumParams] = {
 	{cellLevelParam (29), "Low Tom 96-127 Level",    "dB", ParamType::Float, kCellLevelMinDb, kCellLevelMaxDb, kCellLevelDefaultDb, kCellLevelMinDb, kCellLevelMaxDb, 0, true },
 	{cellLevelParam (30), "High Tom 96-127 Level",   "dB", ParamType::Float, kCellLevelMinDb, kCellLevelMaxDb, kCellLevelDefaultDb, kCellLevelMinDb, kCellLevelMaxDb, 0, true },
 	{cellLevelParam (31), "Crash 96-127 Level",      "dB", ParamType::Float, kCellLevelMinDb, kCellLevelMaxDb, kCellLevelDefaultDb, kCellLevelMinDb, kCellLevelMaxDb, 0, true },
+
+	//--------------------------------------------------------------------
+	// THE NOTE EACH COLUMN ANSWERS TO, 0..127 in whole steps (127 steps),
+	// defaulting to kDrumMap - the defaults are read from it rather than
+	// retyped, so the two cannot disagree. Internal == plain.
+	//--------------------------------------------------------------------
+	{columnNoteParam (0), "Kick Note",       "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[0].note), 0., 127., 127, false},
+	{columnNoteParam (1), "Snare Note",      "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[1].note), 0., 127., 127, false},
+	{columnNoteParam (2), "Clap Note",       "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[2].note), 0., 127., 127, false},
+	{columnNoteParam (3), "Closed HH Note",  "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[3].note), 0., 127., 127, false},
+	{columnNoteParam (4), "Open HH Note",    "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[4].note), 0., 127., 127, false},
+	{columnNoteParam (5), "Low Tom Note",    "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[5].note), 0., 127., 127, false},
+	{columnNoteParam (6), "High Tom Note",   "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[6].note), 0., 127., 127, false},
+	{columnNoteParam (7), "Crash Note",      "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[7].note), 0., 127., 127, false},
 };
 
 //------------------------------------------------------------------------

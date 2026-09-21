@@ -87,6 +87,20 @@ void SampleDrumEditor::clearLevelOverlay (ParamID tag)
 }
 
 //------------------------------------------------------------------------
+void SampleDrumEditor::refreshSharedNotes ()
+{
+	for (int a = 0; a < kColumns; ++a)
+	{
+		if (mNotes[a] == nullptr)
+			continue;
+		bool shared = false;
+		for (int b = 0; b < kColumns && !shared; ++b)
+			shared = (b != a && mNotes[b] && mNotes[b]->note () == mNotes[a]->note ());
+		mNotes[a]->setShared (shared);
+	}
+}
+
+//------------------------------------------------------------------------
 void SampleDrumEditor::addLabel (const CRect& rect, const std::string& text,
                                  const CColor& colour, CHoriTxtAlign align)
 {
@@ -118,13 +132,22 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 		const CCoord half = kHeaderHeight / 2;
 		addLabel (CRect (cell.left, kHeaderTop, cell.right, kHeaderTop + half),
 		          kDrumMap[column].name, kLabel, kCenterText);
-		addLabel (CRect (cell.left, kHeaderTop + half, cell.right, kGridTop - 2),
-		          "note " + std::to_string (kDrumMap[column].note), kValue, kCenterText);
+
+		// THE NOTE BOX - the column's note parameter, not a label.
+		auto* box = new SampleDrumNoteBox (CRect (cell.left + 8, kHeaderTop + half, cell.right - 8,
+		                                          kGridTop - 3),
+		                                   this, static_cast<int32_t> (columnNoteParam (column)), column);
+		if (mController)
+			box->setValueNormalized (
+				static_cast<float> (mController->getParamNormalized (columnNoteParam (column))));
+		mNotes[column] = box;
+		frame->addView (box);
 	}
 
 	// ROW LABELS, from the velocity bands - softest at the top.
 	addLabel (CRect (kMargin, kHeaderTop + kHeaderHeight / 2, kGridLeft - 6, kGridTop - 2),
-	          "velocity", kLabel, kLeftText);
+	          "note / velocity", kLabel, kLeftText);
+	refreshSharedNotes ();
 	for (int row = 0; row < kRows; ++row)
 	{
 		const CRect cell = cellRect (0, row);
@@ -207,6 +230,8 @@ void PLUGIN_API SampleDrumEditor::close ()
 		cell = nullptr;
 	for (auto*& level : mLevels)
 		level = nullptr;
+	for (auto*& box : mNotes)
+		box = nullptr;
 	mTrim = nullptr;
 	mHaveHits = false;
 
@@ -275,6 +300,14 @@ void SampleDrumEditor::updateControl (ParamID tag, ParamValue normalized)
 	{
 		mLevels[cell]->setValueNormalized (static_cast<float> (normalized));
 		mLevels[cell]->invalid ();
+	}
+
+	const int column = columnOfNoteParam (tag);
+	if (column >= 0 && mNotes[column])
+	{
+		mNotes[column]->setValueNormalized (static_cast<float> (normalized));
+		mNotes[column]->invalid ();
+		refreshSharedNotes ();
 	}
 }
 

@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -197,12 +198,12 @@ static void testDrumMap ()
 	for (int c = 0; c < kColumns; ++c)
 	{
 		check (kDrumMap[c].note == expected[c], "column " + str (c) + " is GM note " + str (expected[c]));
-		check (columnForNote (expected[c]) == c, "note " + str (expected[c]) + " plays column " + str (c));
+		check (defaultColumnForNote (expected[c]) == c, "note " + str (expected[c]) + " plays column " + str (c));
 		check (kDrumMap[c].name != nullptr && kDrumMap[c].name[0] != 0, "column " + str (c) + " has a name");
 	}
 
 	for (int note : { 0, 35, 37, 40, 41, 44, 51, 60, 127, -1, 200 })
-		check (columnForNote (note) == -1, "unmapped note " + str (note) + " plays nothing");
+		check (defaultColumnForNote (note) == -1, "unmapped note " + str (note) + " plays nothing");
 
 	// Every note is in the map once.
 	for (int a = 0; a < kColumns; ++a)
@@ -937,7 +938,102 @@ static void testCellLevels ()
 }
 
 //------------------------------------------------------------------------
-// 16. The output level
+// 16. Each column's note
+//------------------------------------------------------------------------
+static void testColumnNotes ()
+{
+	std::printf ("column notes\n");
+
+	// Formatting - the one copy the host and the panel share.
+	char t[16];
+	formatNote (36, t, sizeof (t)); check (std::string (t) == "36 C1", "36 is C1");
+	formatNote (42, t, sizeof (t)); check (std::string (t) == "42 F#1", "42 is F#1");
+	formatNote (60, t, sizeof (t)); check (std::string (t) == "60 C3", "60 is C3 (the Cubase/Logic convention)");
+	formatNote (0, t, sizeof (t));  check (std::string (t) == "0 C-2", "0 is C-2");
+	formatNote (127, t, sizeof (t)); check (std::string (t) == "127 G8", "127 is G8");
+	check (std::atoi (t) == 127, "the NUMBER leads, so the host's text-to-value reading gets it back");
+
+	// Defaults: a new instance plays as before.
+	SampleDrumDsp fresh;
+	bool defaults = true;
+	for (int c = 0; c < kColumns; ++c)
+		if (fresh.columnNote (c) != kDrumMap[c].note)
+			defaults = false;
+	check (defaults, "every column starts on its GM note");
+
+	auto kick = makeSample (100, 0.25f);
+	auto snare = makeSample (100, 0.5f);
+
+	// Move the kick column to 35: 35 plays it, 36 no longer does.
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		dsp.setCellSample (cellIndex (0, 3), kick.get ());
+		dsp.setColumnNote (0, 35);
+		check (dsp.columnNote (0) == 35, "the kick column is on 35");
+
+		dsp.noteOn (36, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 64, 64);
+		check (peakOf (l) == 0.f, "its old note, 36, now plays nothing");
+
+		dsp.noteOn (35, 1.f, 0);
+		renderInto (dsp, l, r, 64, 64);
+		check (l[10] == 0.25f, "its new note, 35, plays the kick");
+		check (dsp.cellForNote (35, 1.f) == cellIndex (0, 3), "cellForNote follows the new note");
+	}
+
+	// Two columns on one note: ONE HIT PLAYS BOTH (layering).
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		dsp.setCellSample (cellIndex (0, 3), kick.get ());
+		dsp.setCellSample (cellIndex (1, 3), snare.get ());
+		dsp.setColumnNote (1, 36);
+		check (dsp.columnsForNote (36) == 0x3u, "36 now names columns 0 and 1");
+		check (dsp.columnsForNote (38) == 0u, "and 38 names nothing");
+		dsp.noteOn (36, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 64, 64);
+		checkClose (l[10], 0.75, 1e-7, "a shared note layers both columns");
+		check (dsp.cellHits (cellIndex (0, 3)) == 1u && dsp.cellHits (cellIndex (1, 3)) == 1u,
+		       "and both cells light");
+	}
+
+	// The choke is by COLUMN: hats moved to other notes still choke.
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		auto open = makeSample (48000, 0.5f);
+		auto closed = makeSample (10, 0.f);
+		dsp.setCellSample (cellIndex (4, 3), open.get ());
+		dsp.setCellSample (cellIndex (3, 3), closed.get ());
+		dsp.setColumnNote (3, 44);   // pedal hat
+		dsp.setColumnNote (4, 26);
+		dsp.noteOn (26, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 256);
+		dsp.noteOn (44, 1.f, 0);
+		renderInto (dsp, l, r, 1024, 256);
+		check (l[1023] == 0.f, "the hat columns choke on whatever notes they are given");
+	}
+
+	// Range: clamped, and bad columns ignored.
+	{
+		SampleDrumDsp dsp;
+		dsp.setColumnNote (2, 200);
+		check (dsp.columnNote (2) == 127, "a note above 127 is clamped");
+		dsp.setColumnNote (2, -5);
+		check (dsp.columnNote (2) == 0, "a note below 0 is clamped");
+		dsp.setColumnNote (-1, 40);
+		dsp.setColumnNote (kColumns, 40);
+		check (dsp.columnNote (-1) == -1 && dsp.columnNote (kColumns) == -1, "bad columns are ignored");
+		check (dsp.columnsForNote (200) == 0u, "an impossible note plays nothing");
+	}
+}
+
+//------------------------------------------------------------------------
+// 17. The output level
 //------------------------------------------------------------------------
 static void measureLevels ()
 {
@@ -1011,6 +1107,7 @@ int main ()
 	testVoiceLimit ();
 	testDegenerateBlocks ();
 	testCellLevels ();
+	testColumnNotes ();
 	measureLevels ();
 
 	std::printf ("--------------------\n");

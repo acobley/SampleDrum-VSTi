@@ -69,6 +69,9 @@ SampleDrumDsp::SampleDrumDsp ()
 		mCellGain[cell] = mCellGainStart[cell] = mCellGainEnd[cell] = mCellTarget[cell];
 	}
 
+	for (int column = 0; column < kColumns; ++column)
+		mColumnNote[column] = kDrumMap[column].note;
+
 	// Usable before setupProcessing, because a host may call process()
 	// first in the rare restart. setSampleRate replaces the guess.
 	setSampleRate (44100.0);
@@ -199,13 +202,39 @@ unsigned int SampleDrumDsp::loadedMask () const
 }
 
 //------------------------------------------------------------------------
+void SampleDrumDsp::setColumnNote (int column, int note)
+{
+	if (column < 0 || column >= kColumns)
+		return;
+	mColumnNote[column] = std::min (kMaxNote, std::max (kMinNote, note));
+}
+
+//------------------------------------------------------------------------
+int SampleDrumDsp::columnNote (int column) const
+{
+	return (column >= 0 && column < kColumns) ? mColumnNote[column] : -1;
+}
+
+//------------------------------------------------------------------------
+unsigned int SampleDrumDsp::columnsForNote (int note) const
+{
+	unsigned int mask = 0u;
+	for (int column = 0; column < kColumns; ++column)
+		if (mColumnNote[column] == note)
+			mask |= 1u << column;
+	return mask;
+}
+
+//------------------------------------------------------------------------
 int SampleDrumDsp::cellForNote (int note, float velocity01) const
 {
-	const int column = columnForNote (note);
-	const int row    = rowForVelocity (velocityTo127 (velocity01));
-	if (column < 0 || row < 0)
+	const int row = rowForVelocity (velocityTo127 (velocity01));
+	if (row < 0)
 		return -1;
-	return chooseCell (column, row, loadedMask ());
+	for (int column = 0; column < kColumns; ++column)
+		if (mColumnNote[column] == note)
+			return chooseCell (column, row, loadedMask ());
+	return -1;
 }
 
 //------------------------------------------------------------------------
@@ -254,15 +283,27 @@ void SampleDrumDsp::syncCells (int numSamples)
 //------------------------------------------------------------------------
 void SampleDrumDsp::noteOn (int note, float velocity01, int sampleOffset)
 {
-	const int column = columnForNote (note);
-	const int row    = rowForVelocity (velocityTo127 (velocity01));
-	if (column < 0 || row < 0)
+	const int row = rowForVelocity (velocityTo127 (velocity01));
+	if (row < 0)
 		return;
 
-	const int cell = chooseCell (column, row, loadedMask ());
-	if (cell < 0)
-		return;
+	// EVERY COLUMN ON THIS NOTE plays - see setColumnNote. A note no
+	// column has is ignored, not folded onto a neighbour: silence is
+	// visibly a mapping question, a wrong drum sounds like a bug.
+	const unsigned int loaded = loadedMask ();
+	for (int column = 0; column < kColumns; ++column)
+	{
+		if (mColumnNote[column] != note)
+			continue;
+		const int cell = chooseCell (column, row, loaded);
+		if (cell >= 0)
+			queueHit (sampleOffset, cell, column);
+	}
+}
 
+//------------------------------------------------------------------------
+void SampleDrumDsp::queueHit (int sampleOffset, int cell, int column)
+{
 	if (mPendingCount >= kMaxEventsPerBlock)
 		return;   // a flood: drop it rather than allocate
 
