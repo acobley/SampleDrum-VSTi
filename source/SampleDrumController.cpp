@@ -4,11 +4,14 @@
 
 #include "SampleDrumController.h"
 #include "SampleDrumDsp.h"
+#include "SampleDrumEditor.h"
 #include "SampleDrumIDs.h"
+#include "SampleDrumState.h"
 
 #include "base/source/fstreamer.h"
 #include "pluginterfaces/base/ustring.h"
 
+#include <algorithm>
 #include <cstdio>
 
 using namespace Steinberg;
@@ -78,14 +81,9 @@ tresult PLUGIN_API SampleDrumController::initialize (FUnknown* context)
 		parameters.addParameter (new SampleDrumParameter (kParams[i]));
 
 	// Standard VST3 bypass, id 1000 and not part of the table - see
-	// SampleDrumParams.h.
+	// SampleDrumParams.h. STR16 ("") for units, never nullptr.
 	parameters.addParameter (STR16 ("Bypass"), STR16 (""), 1, 0,
 	                         ParameterInfo::kCanAutomate | ParameterInfo::kIsBypass, kBypass);
-
-	// Read-only output parameters - the mechanism for a value the DSP
-	// computes per block - are added here too, from id 1001 up. None
-	// yet. STR16 ("") rather than nullptr for their units, for the
-	// reason in the banner above.
 
 	return kResultOk;
 }
@@ -93,6 +91,7 @@ tresult PLUGIN_API SampleDrumController::initialize (FUnknown* context)
 //------------------------------------------------------------------------
 tresult PLUGIN_API SampleDrumController::terminate ()
 {
+	mEditors.clear ();
 	return EditControllerEx1::terminate ();
 }
 
@@ -104,35 +103,24 @@ tresult PLUGIN_API SampleDrumController::setComponentState (IBStream* state)
 
 	IBStreamer streamer (state, kLittleEndian);
 
-	int32 version = 0;
-	if (!streamer.readInt32 (version))
+	// THE PROCESSOR'S OWN READER, so the two halves cannot disagree about
+	// the layout. It starts from defaults, so a short stream cannot leave
+	// the previous project's values - or kit - on the panel.
+	StreamState in;
+	if (!readState (streamer, in))
 		return kResultFalse;
 
-	int32 count = 0;
-	if (!streamer.readInt32 (count))
-		return kResultFalse;
-
-	// DEFAULTS FIRST, exactly as the processor's setState does, and for
-	// the same reason: a short stream must not leave the last project's
-	// values showing in the host. The two halves read the identical
-	// layout in the identical order - one that disagrees with the other
-	// is a controller that lies about what the DSP is doing.
 	for (int i = 0; i < kNumParams; ++i)
-		setParamNormalized (kParams[i].id, kParams[i].defaultNormalized ());
-	setParamNormalized (kBypass, 0.0);
+		setParamNormalized (kParams[i].id, in.params[i]);
+	setParamNormalized (kBypass, in.bypass ? 1.0 : 0.0);
 
-	for (int32 i = 0; i < count; ++i)
+	for (int cell = 0; cell < kCellCount; ++cell)
 	{
-		double v = 0.0;
-		if (!streamer.readDouble (v))
-			return kResultFalse;
-		if (i < kNumParams)
-			setParamNormalized (static_cast<ParamID> (i), v);
+		// The status comes from the processor's report for THIS path, if
+		// it has arrived yet - see cellStatus().
+		mPaths[cell] = in.paths[cell];
+		refreshCellInEditors (cell);
 	}
-
-	int32 bypass = 0;
-	if (streamer.readInt32 (bypass))
-		setParamNormalized (kBypass, bypass ? 1.0 : 0.0);
 
 	return kResultOk;
 }
@@ -147,6 +135,183 @@ tresult PLUGIN_API SampleDrumController::setState (IBStream* /*state*/)
 tresult PLUGIN_API SampleDrumController::getState (IBStream* /*state*/)
 {
 	return kResultOk;
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API SampleDrumController::setParamNormalized (ParamID tag, ParamValue value)
+{
+	const tresult result = EditControllerEx1::setParamNormalized (tag, value);
+	if (result != kResultOk)
+		return result;
+
+	for (auto* editor : mEditors)
+		editor->updateControl (tag, value);
+
+	return result;
+}
+
+//------------------------------------------------------------------------
+IPlugView* PLUGIN_API SampleDrumController::createView (FIDString name)
+{
+	if (name && FIDStringsEqual (name, ViewType::kEditor))
+		return new SampleDrumEditor (this);
+	return nullptr;
+}
+
+//------------------------------------------------------------------------
+tresult PLUGIN_API SampleDrumController::notify (IMessage* message)
+{
+	if (message == nullptr)
+		return kInvalidArgument;
+
+	const FIDString id = message->getMessageID ();
+
+	if (FIDStringsEqual (id, kSampleDrumCellStatusMessage))
+	{
+		int64 cell = -1;
+		int64 status = 0;
+		if (message->getAttributes ()->getInt (kSampleDrumCellIndexAttribute, cell) == kResultOk
+		    && message->getAttributes ()->getInt (kSampleDrumCellStatusAttribute, status) == kResultOk
+		    && isCellIndex (static_cast<int> (cell))
+		    && status >= 0 && status <= static_cast<int64> (SampleStatus::NoFrames))
+		{
+			std::string path;
+			const void* bytes = nullptr;
+			uint32 size = 0;
+			if (message->getAttributes ()->getBinary (kSampleDrumCellPathAttribute, bytes, size) == kResultOk
+			    && bytes != nullptr && size > 0)
+				path.assign (static_cast<const char*> (bytes), size);
+
+			mReportedPaths[cell] = path;
+			mReported[cell] = static_cast<SampleStatus> (status);
+			refreshCellInEditors (static_cast<int> (cell));
+		}
+		return kResultOk;
+	}
+
+	if (FIDStringsEqual (id, kSampleDrumActivityDataMessage))
+	{
+		const void* hits = nullptr;
+		const void* sounding = nullptr;
+		uint32 hitsSize = 0, soundingSize = 0;
+		if (message->getAttributes ()->getBinary (kSampleDrumHitsAttribute, hits, hitsSize) == kResultOk
+		    && message->getAttributes ()->getBinary (kSampleDrumSoundingAttribute, sounding, soundingSize) == kResultOk
+		    && hitsSize == sizeof (std::uint32_t) * kCellCount
+		    && soundingSize == sizeof (std::uint8_t) * kCellCount)
+		{
+			for (auto* editor : mEditors)
+				editor->setActivity (static_cast<const std::uint32_t*> (hits),
+				                     static_cast<const std::uint8_t*> (sounding));
+		}
+		return kResultOk;
+	}
+
+	return EditControllerEx1::notify (message);
+}
+
+//------------------------------------------------------------------------
+const std::string& SampleDrumController::cellPath (int cell) const
+{
+	static const std::string kNone;
+	return isCellIndex (cell) ? mPaths[cell] : kNone;
+}
+
+//------------------------------------------------------------------------
+SampleStatus SampleDrumController::cellStatus (int cell) const
+{
+	if (!isCellIndex (cell) || mPaths[cell].empty ())
+		return SampleStatus::Empty;
+
+	// Only a report ABOUT THIS FILE is believed; otherwise the guess.
+	return (mReportedPaths[cell] == mPaths[cell]) ? mReported[cell] : SampleStatus::Loaded;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::setCellPath (int cell, const std::string& path)
+{
+	if (!isCellIndex (cell))
+		return;
+
+	mPaths[cell] = path;
+	refreshCellInEditors (cell);
+
+	if (auto* message = allocateMessage ())
+	{
+		FReleaser releaser (message);
+		message->setMessageID (kSampleDrumCellMessage);
+		message->getAttributes ()->setInt (kSampleDrumCellIndexAttribute, cell);
+
+		// ABSENT means cleared - an empty binary is not sent.
+		if (!path.empty ())
+			message->getAttributes ()->setBinary (kSampleDrumCellPathAttribute, path.data (),
+			                                      static_cast<uint32> (path.size ()));
+		sendMessage (message);
+	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::auditionCell (int cell)
+{
+	if (!isCellIndex (cell))
+		return;
+
+	if (auto* message = allocateMessage ())
+	{
+		FReleaser releaser (message);
+		message->setMessageID (kSampleDrumAuditionMessage);
+		message->getAttributes ()->setInt (kSampleDrumCellIndexAttribute, cell);
+		sendMessage (message);
+	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::requestActivity ()
+{
+	if (auto* message = allocateMessage ())
+	{
+		FReleaser releaser (message);
+		message->setMessageID (kSampleDrumActivityRequestMessage);
+		sendMessage (message);
+	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::refreshCellInEditors (int cell)
+{
+	for (auto* editor : mEditors)
+		editor->refreshCell (cell);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::editorAttached (EditorView* editor)
+{
+	if (auto* e = dynamic_cast<SampleDrumEditor*> (editor))
+	{
+		if (std::find (mEditors.begin (), mEditors.end (), e) == mEditors.end ())
+			mEditors.push_back (e);
+	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::editorRemoved (EditorView* editor)
+{
+	editorDestroyed (editor);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::editorDestroyed (EditorView* editor)
+{
+	// DO NOT dynamic_cast HERE. EditorView::~EditorView() calls this, and
+	// by then the SampleDrumEditor sub-object is already destroyed: the
+	// dynamic type is plain EditorView, dynamic_cast yields NULL, and the
+	// entry would survive in mEditors as a dangling pointer for the next
+	// setParamNormalized to follow. Comparing the UPCAST pointer is well
+	// defined at every point in destruction.
+	mEditors.erase (std::remove_if (mEditors.begin (), mEditors.end (),
+	                                [editor] (SampleDrumEditor* e) {
+		                                return static_cast<EditorView*> (e) == editor;
+	                                }),
+	                mEditors.end ());
 }
 
 //------------------------------------------------------------------------

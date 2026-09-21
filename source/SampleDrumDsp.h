@@ -12,32 +12,41 @@
 //      thing here that actually executes during development.
 //
 //   2. VST3 splits the processor from the controller, and they do not
-//      share memory. Anything the EDITOR displays that the DSP COMPUTES
-//      must therefore come from ONE SHARED FUNCTION that both call - not
-//      from two copies of the arithmetic that will drift apart. This
-//      header is where those functions live: see dbToGain() below, which
-//      the DSP uses to set its gain and the panel uses to label its
-//      readout.
+//      share memory. Anything the panel displays that the DSP computes
+//      must come from ONE SHARED FUNCTION that both call. Those live here
+//      (dbToGain) and in SampleDrumKit.h (which cell a note plays).
 //
-// WHAT IT DOES TODAY: nothing but render silence and apply a smoothed
-// output trim. SampleDrum is an instrument, so there is no input signal
-// to pass through - render() fills the block from the voice mix, and the
-// voice mix is currently empty. applyTrim() is the trim stage on its
-// own, exposed so the tests can push a known block through it; that is
-// the "pass-through" the blank scaffold is tested as.
+// WHAT IT DOES: 32 cells of samples, 8 drums by 4 velocity bands. A note
+// arrives with a sample offset; the kit's rules pick a cell; a voice
+// plays that cell's sample from the start to the end, once, at unity
+// gain, resampled linearly to the host's rate. Voices sum, pass through
+// the smoothed output trim, and that is the instrument.
 //
-// WHERE THE SAMPLER GOES: renderVoices() is the one empty function.
-// Everything else is the frame around it. Before writing a real
-// processing loop in there, read ../PORTING-GUIDE.md section 5 - the
-// rules about not allocating on the audio thread, denormals, 64-bit
-// hosts and resisting the urge to improve the original's gain staging
-// all apply to new DSP exactly as they do to a port.
+// THE THREADING, which is the part to understand before changing
+// anything here:
+//
+//   * The UI thread OWNS every SampleBuffer (the processor holds them in
+//     shared_ptrs) and publishes each cell's to this class with
+//     setCellSample(), a RELEASE store of a bare pointer.
+//   * The audio thread reads that pointer with an ACQUIRE load when a
+//     voice STARTS, and the voice then keeps it.
+//   * A replaced buffer is retired by the processor and freed only once
+//     two further blocks have begun. A voice still holding it would be
+//     reading freed memory, so at the top of EVERY process() call -
+//     including the parameter-only ones - syncCells() finds each voice
+//     whose cell has changed under it and ends it inside that block.
+//     That is the whole contract; see syncCells().
 //------------------------------------------------------------------------
 
 #pragma once
 
+#include "SampleDrumKit.h"
+#include "SampleDrumSample.h"
+
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace SampleDrum {
@@ -53,25 +62,42 @@ constexpr int kChannelCount = 2;
 
     IT IS NOT A TASTE SETTING. It is what keeps a parameter move from
     clicking, and the tests assert that no single sample steps the gain
-    by more than 1 % - which at the lowest sample rate anyone runs is the
-    binding constraint on how short this may be. Shorten it and re-run
-    the suite. */
+    by more than 1 %. Shorten it and re-run the suite. */
 constexpr double kTrimSmoothingSeconds = 0.020;
 
 /** The floor below which the smoother's own state is flushed to zero.
-
-    Only the SMOOTHER, never the signal: the recursive element is the one
-    that can decay into denormals and cost a hundred times the cycles to
-    keep multiplying, and flushing the signal instead would break
-    applyTrim()'s bit-identity at unity for no benefit. */
+    Only the smoother, never the signal - see Smoother::next. */
 constexpr float kDenormalFloor = 1e-25f;
+
+/** How many samples can sound at once, across the whole kit.
+
+    32 is a cymbal's tail under a fast hat pattern with room to spare. A
+    hit that finds the pool full STEALS THE OLDEST voice, with a
+    kChokeFadeSeconds fade rather than a hard cut. */
+constexpr int kMaxVoices = 32;
+
+/** The voice pool is LARGER than kMaxVoices by this many, and the spare
+    slots are what let a stolen voice FADE rather than cut: the hit that
+    steals takes a spare slot while the victim spends 5 ms leaving. Only
+    when even the spares are full is anything cut hard. */
+constexpr int kSpareVoices = 8;
+
+/** How many note-ons one block may carry. A bound, so the queue is a
+    fixed array and the audio thread never allocates; a block with more
+    than this - a MIDI flood - drops the excess rather than growing. */
+constexpr int kMaxEventsPerBlock = 256;
+
+/** The fade applied when a sound has to stop early, in seconds.
+
+    THREE CASES, one length: the closed hat CHOKING the open one, a voice
+    STOLEN when the pool is full, and a voice whose cell was REPLACED
+    while it played. Short enough to read as "stopped", long enough not
+    to click. The choke is the one that is heard as a musical event, and
+    5 ms is roughly what a real hat's pedal takes. */
+constexpr double kChokeFadeSeconds = 0.005;
 
 //------------------------------------------------------------------------
 // The shared functions
-//
-// Called by the DSP, by the parameter table's text formatting, and by the
-// editor's readouts. One copy of the arithmetic, so the number on screen
-// and the number in the audio path cannot disagree.
 //------------------------------------------------------------------------
 
 /** Decibels to a linear gain. Exactly 1.0 at 0 dB, which is what makes
@@ -88,31 +114,17 @@ inline double gainToDb (double gain)
 }
 
 //------------------------------------------------------------------------
-/** A one-pole glide towards a target.
-
-    Deliberately the simplest thing that cannot click. The coefficient is
-    recomputed from the sample rate, so the glide takes the same number
-    of MILLISECONDS at 44.1 k and at 192 k rather than the same number of
-    samples - a smoother whose coefficient is a constant gets four times
-    faster when somebody switches to 192 k, and the click comes back. */
+/** A one-pole glide towards a target, its coefficient recomputed from the
+    sample rate so the glide takes the same MILLISECONDS at every rate. */
 class Smoother
 {
 public:
 	void setSampleRate (double sampleRate, double seconds);
-
-	/** Jump straight to the target, no glide. Used at reset and at every
-	    sample-rate change: a smoother left at zero would fade the whole
-	    instrument in over 20 ms every time the host restarted it. */
 	void snap (float target);
-
 	void setTarget (float target) { mTarget = target; }
 	float target () const { return mTarget; }
 	float value () const { return mValue; }
-
-	/** One sample of glide, returning the value to use for it. */
 	float next ();
-
-	/** The coefficient in use, for the tests. */
 	float coefficient () const { return mCoeff; }
 
 private:
@@ -127,64 +139,141 @@ class SampleDrumDsp
 public:
 	SampleDrumDsp ();
 
-	/** Recomputes EVERY rate-dependent coefficient and resets state.
-
-	    Every one, with no exceptions and no "it is close enough at 48 k":
-	    a coefficient computed once at 44.1 k and then used at 96 k is the
-	    bug that presents as "it sounds wrong on his machine only". Call
-	    it from setupProcessing, never from process(). */
+	/** Recomputes EVERY rate-dependent value and stops every voice. From
+	    setupProcessing, never from process(). */
 	void setSampleRate (double sampleRate);
 	double sampleRate () const { return mSampleRate; }
 
-	/** The largest block the host will ask for. Sizes the scratch, so
-	    that render() never allocates on the audio thread. Also called
-	    from setupProcessing only. */
+	/** The largest block the host will ask for. From setupProcessing
+	    only; kept for symmetry with the other projects - the voices
+	    render straight into the caller's buffer and need no scratch. */
 	void setMaxBlockSize (int maxSamples);
 	int maxBlockSize () const { return mMaxBlockSize; }
 
-	/** Stop everything and glide from wherever the trim already is. */
+	/** Stop every voice, forget queued hits, snap the trim. */
 	void reset ();
 
-	/** The output trim, in dB - the parameter table's plain value, which
-	    for this parameter is also its internal value. Smoothed. */
+	/** The output trim, in dB. Smoothed. */
 	void setOutputTrimDb (double db);
 	double outputTrimDb () const { return mTrimDb; }
 
-	/** Render one block of the instrument's output into two channels.
+	//--------------------------------------------------------------------
+	// Samples - UI THREAD
+	//--------------------------------------------------------------------
 
-	    Tolerates numSamples <= 0 and null pointers, because a host is
-	    entitled to hand over a parameter-only block and the processor
-	    passes it straight through. */
+	/** Publish a cell's sample, or nullptr to empty it.
+
+	    UI THREAD. The buffer is owned by the caller and must stay alive
+	    until two further blocks have begun after it is replaced - the
+	    processor's retire list is what guarantees that. */
+	void setCellSample (int cell, const SampleBuffer* sample);
+
+	//--------------------------------------------------------------------
+	// Playing - AUDIO THREAD
+	//--------------------------------------------------------------------
+
+	/** CALL FIRST IN EVERY process(), including when numSamples is 0.
+
+	    Every voice whose cell now holds a DIFFERENT buffer from the one
+	    it started with is ended INSIDE THIS BLOCK: faded over the block
+	    if there is one, stopped outright if numSamples is 0. By the time
+	    the processor frees the old buffer, two blocks later, nothing can
+	    be holding it. Skip this on a parameter-only block and a voice
+	    carries a dangling pointer into the next. */
+	void syncCells (int numSamples);
+
+	/** A MIDI note-on, `sampleOffset` samples into the coming block.
+
+	    Only QUEUED; render() starts it at exactly that sample. A voice
+	    started at offset 0 regardless is the classic timing bug, audible
+	    as every hit quantised to the block size. Notes not in the drum
+	    map and velocity 0 are ignored here. */
+	void noteOn (int note, float velocity01, int sampleOffset);
+
+	/** Play one cell directly, at the start of the coming block, for the
+	    panel's audition click. Ignores the velocity bands and fallback -
+	    the user clicked THIS cell. */
+	void auditionCell (int cell);
+
+	/** Render the block: clear it, then the queued hits and every voice,
+	    then the trim. Tolerates numSamples <= 0 and null pointers. */
 	void render (float* left, float* right, int numSamples);
 
-	/** The trim stage on its own, applied in place to a block that is
-	    already there.
-
-	    Exposed for the tests: at 0 dB with the smoother settled this is
-	    bit-identical to its input, and that is the assertion the first
-	    real DSP has to keep passing. */
+	/** The trim stage on its own, in place - exposed for the tests. At
+	    0 dB with the smoother settled it is bit-identical. */
 	void applyTrim (float* left, float* right, int numSamples);
 
-	/** The trim's current linear gain, after smoothing. */
 	float currentTrimGain () const { return mTrim.value (); }
 
+	//--------------------------------------------------------------------
+	// For the panel's lamps and for the tests
+	//--------------------------------------------------------------------
+
+	/** How many times this cell has been STRUCK, ever. Written by the
+	    audio thread, read by the UI thread with a relaxed load: the panel
+	    lights a cell when the count moves, so a hit shorter than one
+	    timer tick still flashes. */
+	std::uint32_t cellHits (int cell) const;
+
+	/** True while a voice is playing this cell, as of the last block. */
+	bool cellSounding (int cell) const;
+
+	int activeVoices () const;
+
+	/** Which cell the kit's rules would play for this note and velocity
+	    RIGHT NOW, or -1. The same code path noteOn uses, exposed so the
+	    tests assert the rule rather than a copy of it. */
+	int cellForNote (int note, float velocity01) const;
+
 private:
-	/** THE ONE EMPTY FUNCTION. Sum every voice into the block, which is
-	    handed over already zeroed. Silence until there is a drum
-	    machine in here. */
-	void renderVoices (float* left, float* right, int numSamples);
+	struct Voice
+	{
+		const SampleBuffer* sample = nullptr;   // null = free
+		int    cell     = -1;
+		double position = 0.0;                  // in source frames
+		double step     = 1.0;                  // source frames per output sample
+		std::uint64_t age = 0;                  // start order, for stealing
+
+		// Early stop: when fadeLeft > 0 the voice ramps to silence over
+		// fadeLeft samples and is freed at the end of it.
+		int   fadeLeft  = 0;
+		float fadeGain  = 1.f;
+		float fadeStep  = 0.f;
+
+		bool active () const { return sample != nullptr; }
+	};
+
+	struct PendingHit
+	{
+		int offset = 0;
+		int cell   = -1;
+		int column = -1;
+	};
+
+	void startVoice (int cell, int column);
+	void beginFade (Voice& voice, int samples);
+	void renderVoices (float* left, float* right, int from, int to);
+	unsigned int loadedMask () const;
 
 	double mSampleRate   = 44100.0;
 	int    mMaxBlockSize = 0;
 	double mTrimDb       = 0.0;
+	int    mFadeSamples  = 220;
 
 	Smoother mTrim;
 
-	/** Sized in setMaxBlockSize and never resized anywhere else. Unused
-	    by the silent scaffold; it is here so the first voice that needs
-	    somewhere to mix has it, rather than reaching for new[] on the
-	    audio thread. */
-	std::vector<float> mScratch;
+	/** What the audio thread reads. Release-stored by setCellSample,
+	    acquire-loaded when a voice starts. */
+	std::atomic<const SampleBuffer*> mCells[kCellCount];
+
+	Voice mVoices[kMaxVoices + kSpareVoices];
+	std::uint64_t mNextAge = 0;
+
+	PendingHit mPending[kMaxEventsPerBlock];
+	int mPendingCount = 0;
+
+	std::atomic<std::uint32_t> mHits[kCellCount];
+	std::atomic<bool>          mSounding[kCellCount];
 };
 
 //------------------------------------------------------------------------
