@@ -29,6 +29,30 @@ cmake_minimum_required(VERSION 3.25.0)
 set(CMAKE_OSX_DEPLOYMENT_TARGET 10.13 CACHE STRING "macOS deployment target")
 
 #-----------------------------------------------------------------------------
+# UNIVERSAL BY DEFAULT
+#
+# Without this the Xcode generator builds for whatever the building Mac is -
+# arm64, in practice - while distribution.xml advertises the installer as
+# x86_64,arm64. The package then installs perfectly on an Intel Mac, or in a
+# host running under Rosetta, and nothing loads: the same shape of failure as
+# the AU's dangling symlink, and just as invisible from here.
+#
+# It has to be set BEFORE project(), because that is when the compiler checks
+# run and they bake in the architectures.
+#
+# The cost is real: every translation unit in the SDK and VSTGUI is compiled
+# twice, so a clean build takes about twice as long. -DPORT_UNIVERSAL=OFF
+# builds only for this machine, which is what you want while iterating.
+#
+# Verify with:  lipo -archs build/VST3/Release/<Name>.vst3/Contents/MacOS/<Name>
+#-----------------------------------------------------------------------------
+option(PORT_UNIVERSAL "Build arm64 + x86_64 (release builds should)" ON)
+
+if(APPLE AND PORT_UNIVERSAL AND NOT CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "" FORCE)
+endif()
+
+#-----------------------------------------------------------------------------
 # PLUG-IN IDENTITY  --  this is the block to edit
 #
 # PLUGIN_NAME is used for the target, the bundle, the Xcode scheme and the
@@ -229,6 +253,43 @@ if(APPLE)
         set(PORT_ADHOC_SIGN ON)
         message(STATUS "${PLUGIN_NAME}: no signing identity given - bundles will be ad-hoc signed")
     endif()
+endif()
+
+#-----------------------------------------------------------------------------
+# KEEP THE BUILD MACHINE'S PATHS OUT OF THE SHIPPED BINARY
+#
+# VSTGUI's assert macros embed __FILE__, so a release build carries about
+# fifty absolute source paths - every one of them naming the home directory it
+# was built in. Harmless, and completely standard across shipped plug-ins, but
+# it is public the moment the installer is published, and `strings` on the
+# binary hands a stranger your username and directory layout.
+#
+# -ffile-prefix-map REWRITES THE PREFIX AT COMPILE TIME, so __FILE__ becomes
+# "SampleDrum/external/..." instead. Note that -fdebug-prefix-map, which is the
+# one people reach for, does NOT do this: it rewrites debug info only and
+# leaves __FILE__ exactly as it was. -ffile-prefix-map is the superset of that
+# and -fmacro-prefix-map, and the macro half is the half that matters here.
+#
+# THIS MUST COME BEFORE add_subdirectory BELOW. The paths are baked into
+# VSTGUI's translation units, not into ours, so a target_compile_options on
+# the plug-in target would strip almost nothing. add_compile_options at
+# directory scope reaches every target created after it, the SDK's included.
+#
+# Guarded, because an unknown flag is a hard error on an older toolchain and
+# this is cosmetic - never worth failing a build over.
+#-----------------------------------------------------------------------------
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-ffile-prefix-map=/a=b" PORT_HAVE_FILE_PREFIX_MAP)
+
+if(PORT_HAVE_FILE_PREFIX_MAP)
+    add_compile_options(
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}=${PLUGIN_NAME}"
+        "-ffile-prefix-map=${VST3_SDK_ROOT}=vst3sdk"
+        "-ffile-prefix-map=${CMAKE_BINARY_DIR}=build")
+    message(STATUS "${PLUGIN_NAME}: build paths will be stripped from the binary")
+else()
+    message(STATUS "${PLUGIN_NAME}: this compiler has no -ffile-prefix-map, so "
+                   "the binary will carry absolute build paths")
 endif()
 
 # Only build what this plug-in needs.

@@ -5,3 +5,27 @@ external/
 
 # Standalone test binaries (built by hand outside cmake)
 dsptests
+
+# Installer outputs. The machinery is tracked; what it produces is not.
+# Released packages are GitHub Release assets against a tag, not commits - git
+# never forgets a binary, and a .pkg in the history is in every clone for ever.
+# Ignoring them here also means an UNSIGNED local build can never be swept in
+# by a `git add -A`.
+installer/build/
+installer/*.pkg
+installer/.built-from
+
+# SIGNING MATERIAL NEVER GOES IN THE REPO.
+#
+# The .cer and .certSigningRequest are PUBLIC - a certificate is what gets
+# embedded in everything you sign, and a CSR carries only a public key - so
+# committing them is untidy rather than dangerous. The rest of this list is
+# not public at all: a .p12 carries the PRIVATE KEY, and an App Store Connect
+# AuthKey_*.p8 authenticates as you to the notary service and downloads
+# exactly once. Either of those in a repo is somebody else signing as you.
+*.cer
+*.certSigningRequest
+*.p12
+*.pfx
+*.p8
+AuthKey_*

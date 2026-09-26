@@ -391,11 +391,10 @@ file, or a file that did not load.
 `/Users/Shared/SampleDrum/Samples` (`SampleDrumSample.h`). `/Users/Shared`
 is the same path on every Mac, so a cell loaded from there needs nothing
 carried. `isFactoryPath` is textual, so the answer is the same on a machine
-without the content installed. **There is no installer yet**; when one is
-built, fill that folder from a `samples/` directory as an optional
-component, exactly as Project6's `build-installer.sh` does, and have it
-refuse to run if its destination and `kFactorySampleRoot` disagree.
-**Decide before the first release** — once a project is saved referring to
+without the content installed. **The installer (§12) fills that folder**
+from `samples/` as an optional component, exactly as Project6's does, and
+refuses to run if its destination and `kFactorySampleRoot` disagree.
+**Permanent from the first release** — once a project is saved referring to
 the root, moving it breaks those projects.
 
 ### The decisions inside it
@@ -500,4 +499,50 @@ cell message. `restore` (setState) forgets them.
 **What the processor does on a clear:** the message has no path, so
 `replace` leaves the cell with nothing and the next save no longer carries
 the file.
+
+## 12. The installer and the release kit (2026-09-26)
+
+`installer/` is ForTran 1.2.1.0's kit (itself FilterDrum's and Project6's),
+with the factory-samples component from Project6 1.2.0.0 in place of
+ForTran's presets. **Read `installer/README.md`**; this is only what differs.
+
+| File | From | Changed |
+|---|---|---|
+| `build-installer.sh` | ForTran | names/ids; presets → **samples**: every `.wav` under `samples/` (sub-folders kept) → `SampleDrum-Samples.pkg` → `/Users/Shared/SampleDrum/Samples`, `--ownership recommended`; refuses if that is not `kFactorySampleRoot` in `SampleDrumSample.h`; `BEGIN SAMPLES`/`END SAMPLES` blocks stripped from the distribution when there are none. `root-samples` always exists, so the symlink guard scans it — ForTran's `${PRESET_COUNT:+…}` passed a missing directory to `find` (harmless there; worth fixing). |
+| `build-release.sh`, `publish-release.sh`, `test-build-release.sh`, `test-publish.sh` | ForTran | **none** — they read `NAME=` from `build-installer.sh`. The preset step is skipped (no `tools/make-presets.py`). Notary profile: `project6-notary`, shared by every plug-in. |
+| `verify-install.sh` | ForTran | names, `auval -v aumu SmDr AECo`; section 5 checks the factory samples are there and readable by every user. |
+| `distribution.xml`, `resources/*.html`, `scripts-au/postinstall` | ForTran / Project6 | SampleDrum's prose: the +6 dBFS summing, velocity picks the row, samples embedded. No REAPER/pitch-wheel/Level-knob text carried over. |
+| `release-notes-1.0.0.0.md` | new | `SHA-256: <paste from: …>` placeholder, filled by `publish-release.sh`. Assumes **no factory samples** ship; if `samples/` gets any, add them to *Installing* and *Uninstalling*. |
+| `tools/run-tests.sh` | new | DspTests, StateTests (skipped without the SDK; CoreFoundation on macOS), `check-versions.py`, both stub suites. |
+| `tools/check-versions.py` | ForTran | none. |
+| `samples/README.md` | Project6 | `.wav` only. |
+| `LICENSE` | Project6's header + ForTran's text | **CC BY-SA 4.0**, chosen 2026-09-26. The installer's licence pane needs it. |
+| `CMakeLists.txt` | ForTran | **`PORT_UNIVERSAL` (arm64 + x86_64, before `project()`)** and **`-ffile-prefix-map` (before `add_subdirectory`)** — without them `build-release.sh` refuses the build. |
+| `setup-xcode.sh` | ForTran | `--native` (one architecture, faster while iterating). |
+| `.gitignore` | ForTran | packages, `.built-from`, signing material. |
+
+**Verified from the Linux VM:** `tools/run-tests.sh` — DSP 405/0, State
+21/0, versions agree, **test-build-release 22/0, test-publish 18/0**.
+`build-installer.sh` run against stubbed `pkgbuild`/`productbuild`/
+`pkgutil`/`codesign` and a fake build tree with the absolute
+`plugin.vst3` symlink: with no samples → two packages, no samples choice,
+distribution well-formed, every pkg-ref resolves; with `Kicks/k.WAV`,
+`s.wav` and the README → three packages, the two `.wav` staged with their
+folder and the README left out; with `kFactorySampleRoot` changed → refused.
+
+**Not verified:** anything Apple — a real `pkgbuild`, signing,
+notarisation, `spctl`, and whether the universal build and prefix map
+compile clean on the Mac.
+
+### To release 1.0.0.0
+
+1. **Create the GitHub repository** and `git remote add origin …`; push
+   `master`. `publish-release.sh` refuses without a reachable remote.
+2. Do the §9 checks by hand in a host first — nothing in the kit tests the
+   panel.
+3. `installer/build-release.sh` (clean universal build, then one signed,
+   notarised, stapled package), then install it and run
+   `installer/verify-install.sh`.
+4. `installer/publish-release.sh --dry-run`, then without `--dry-run`.
+5. The package is under **Releases**, not in the file listing.
 

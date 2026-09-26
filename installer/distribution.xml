@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The product archive: the panes the installer shows and the two things a
+    person can choose to install. __VERSION__ is substituted by
+    build-installer.sh from CMakeLists.txt, so the version lives in one place.
+-->
+<installer-gui-script minSpecVersion="2">
+
+    <title>SampleDrum</title>
+    <organization>audio.sampledrum</organization>
+
+    <!-- customize="always" so the choice pane is always shown: somebody who
+         only uses one format should not have the other installed silently. -->
+    <options customize="always"
+             require-scripts="false"
+             hostArchitectures="x86_64,arm64"/>
+
+    <!-- WHERE IT MAY BE INSTALLED. This replaces rootVolumeOnly="true", which
+         is what used to be here and which Apple's own Distribution XML
+         reference marks DEPRECATED, naming this element as its replacement.
+
+         Plug-ins go in /Library/Audio/Plug-Ins, which is on the boot volume
+         by definition, so: the system domain yes, an arbitrary volume no, and
+         the user's home no - the component packages install to absolute
+         paths under /Library and a home-directory install would put them
+         somewhere no host looks. -->
+    <domains enable_anywhere="false"
+             enable_currentUserHome="false"
+             enable_localSystem="true"/>
+
+    <welcome    file="welcome.html"    mime-type="text/html"/>
+    <license    file="license.txt"     mime-type="text/plain"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+
+    <choices-outline>
+        <line choice="choice.vst3"/>
+        <line choice="choice.au"/>
+        <!-- BEGIN SAMPLES -->
+        <line choice="choice.samples"/>
+        <!-- END SAMPLES -->
+    </choices-outline>
+
+    <choice id="choice.vst3"
+            title="VST3"
+            description="SampleDrum.vst3, installed into /Library/Audio/Plug-Ins/VST3. Works in any VST3 host.">
+        <pkg-ref id="audio.sampledrum.vst3.pkg"/>
+    </choice>
+
+    <choice id="choice.au"
+            title="Audio Unit"
+            description="SampleDrum.component, installed into /Library/Audio/Plug-Ins/Components. For Logic Pro and other AU hosts.">
+        <pkg-ref id="audio.sampledrum.audiounit.pkg"/>
+    </choice>
+
+    <pkg-ref id="audio.sampledrum.vst3.pkg"
+             version="__VERSION__"
+             onConclusion="none">SampleDrum-VST3.pkg</pkg-ref>
+
+    <pkg-ref id="audio.sampledrum.audiounit.pkg"
+             version="__VERSION__"
+             onConclusion="none">SampleDrum-AU.pkg</pkg-ref>
+
+    <!-- BEGIN SAMPLES -->
+    <!-- THE FACTORY SAMPLES, and the only part of this package outside
+         /Library. /Users/Shared is the one writable place that is the same
+         path on every Mac, which is what lets a project made from these files
+         open anywhere without carrying them. build-installer.sh deletes each
+         of these marked blocks when samples/ has nothing to ship: a pkg-ref
+         to a package that was never built is exactly what Installer reports
+         as "pagecontroller error -1", naming none of it. -->
+    <choice id="choice.samples"
+            title="Factory samples"
+            description="Drum samples installed into /Users/Shared/SampleDrum/Samples. A cell loaded from there is not embedded in your project, so projects that use them stay small and open on any Mac that has them installed.">
+        <pkg-ref id="audio.sampledrum.samples.pkg"/>
+    </choice>
+
+    <pkg-ref id="audio.sampledrum.samples.pkg"
+             version="__VERSION__"
+             onConclusion="none">SampleDrum-Samples.pkg</pkg-ref>
+    <!-- END SAMPLES -->
+
+</installer-gui-script>

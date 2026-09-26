@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8">
+<style>
+  body { font: 13px -apple-system, "Helvetica Neue", sans-serif; margin: 0; color: #1d1d1f; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  p  { margin: 0 0 10px; line-height: 1.45; }
+  ul { margin: 0 0 10px 18px; padding: 0; line-height: 1.45; }
+  .note { color: #6e6e73; }
+</style>
+</head>
+<h2>SampleDrum</h2>
+
+<p>A sample-based drum instrument: an eight-by-four grid of cells, each
+holding a <code>.wav</code> you drop on it from the Finder. Each column is a
+drum on its own MIDI note (General MIDI by default); each row is a velocity
+band, so the harder the hit, the lower the row that plays.</p>
+
+<p>This installs SampleDrum for every user on this Mac:</p>
+
+<ul>
+  <li><b>VST3</b> &mdash; <code>/Library/Audio/Plug-Ins/VST3</code></li>
+  <li><b>Audio Unit</b> &mdash; <code>/Library/Audio/Plug-Ins/Components</code></li>
+</ul>
+
+<p>You choose which on the next-but-one pane. Installing over an existing copy
+replaces it; your projects and the samples in them are untouched.</p>
+
+<p class="note">Quit your DAW before installing. A host that is already running
+holds the old plug-in open and will not see the new one until it is
+restarted.</p>
+
+</body>
+</html>
