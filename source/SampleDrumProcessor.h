@@ -12,7 +12,9 @@
 //   * the single 0-in / 2-out entry in resource/au-info.plist
 //
 // WHAT THIS HALF OWNS: the 32 cell paths (it is the half the host asks
-// for the project's state), the decoded SampleBuffers, and the DSP. Files
+// for the project's state), each cell's file as it was on disk (embedded
+// in the project, so it travels - see mFiles), the decoded SampleBuffers,
+// and the DSP. Files
 // are opened and decoded HERE, in notify() and setState(), which are the
 // UI thread - never in process(). The DSP is handed bare pointers; the
 // shared_ptrs stay here, and a replaced buffer is freed only once two
@@ -102,7 +104,9 @@ private:
 	// Cells - UI THREAD ONLY
 	//--------------------------------------------------------------------
 
-	/** Read the file at mPaths[cell], publish it, report how it went. */
+	/** Decode mFiles[cell] if the project carried it, else read the file
+	    at mPaths[cell]; publish it, keep the bytes for embedding, report
+	    how it went. */
 	void loadCell (int cell);
 
 	/** Hand a buffer (or none) to the DSP and retire the one it replaces.
@@ -129,6 +133,16 @@ private:
 	    Strings allocate, so NOTHING ON THE AUDIO THREAD READS THESE. */
 	std::string  mPaths[kCellCount];
 	SampleStatus mStatus[kCellCount] = {};
+
+	/** EACH CELL'S FILE AS IT WAS ON DISK, for embedding in the project,
+	    and the rule for carrying one to another cell - see CellFiles.
+
+	    Filled by loadCell from the disk read, by setState from the
+	    stream, or by notify() from the cell a file was dragged from - and
+	    when it holds a file, loadCell decodes that INSTEAD of the disk:
+	    the embedded copy wins, so a project sounds as it was saved. Null
+	    for an empty cell, a factory file and a file that did not load. */
+	CellFiles mFiles;
 
 	/** The decoded audio, OWNED HERE. The DSP holds bare pointers. */
 	std::shared_ptr<const SampleBuffer> mSamples[kCellCount];

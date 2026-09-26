@@ -32,6 +32,10 @@
 #include <string>
 #include <vector>
 
+#include <fstream>
+#include <sys/stat.h>
+#include <unistd.h>
+
 using namespace SampleDrum;
 
 //------------------------------------------------------------------------
@@ -384,7 +388,7 @@ static void testWav ()
 	}
 
 	check (loadWavFile ("/nonexistent/definitely/not/here.wav", *std::make_unique<SampleBuffer> ())
-	           == SampleStatus::Unreadable, "a missing file is Unreadable, not a crash");
+	           == SampleStatus::Missing, "a missing file is Missing (file not found), not a crash");
 	for (int s = 0; s <= static_cast<int> (SampleStatus::NoFrames); ++s)
 		check (sampleStatusText (static_cast<SampleStatus> (s)) != nullptr, "status " + str (s) + " has text");
 }
@@ -1087,6 +1091,218 @@ static void measureLevels ()
 }
 
 //------------------------------------------------------------------------
+// Projects that travel: factory paths and whole-file reads
+//------------------------------------------------------------------------
+static void testPortability ()
+{
+	const std::string root = kFactorySampleRoot;
+
+	// isFactoryPath is TEXTUAL, and only for things INSIDE the root.
+	check (isFactoryPath (root + "/Kits/kick.wav"),     "a file inside the factory root is factory");
+	check (isFactoryPath (root + "/snare.wav"),         "a file directly in the root is factory");
+	check (!isFactoryPath (root),                       "the root itself is not a file");
+	check (!isFactoryPath (root + "/"),                 "the root with a slash is not a file");
+	check (!isFactoryPath (root + "Extra/kick.wav"),    "a sibling whose name starts with the root is not factory");
+	check (!isFactoryPath ("/Users/andy/Samples/kick.wav"), "a user's own file is not factory");
+	check (!isFactoryPath (""),                         "an empty path is not factory");
+	check (root.compare (0, 14, "/Users/Shared/") == 0, "the root is under /Users/Shared - the same on every Mac");
+
+	check (std::string (sampleStatusText (SampleStatus::Missing)) == "file not found",
+	       "Missing reads 'file not found'");
+	check (kLastSampleStatus == SampleStatus::Missing, "kLastSampleStatus is the last value");
+	check (static_cast<int> (SampleStatus::NoFrames) == 6 && static_cast<int> (SampleStatus::Missing) == 7,
+	       "Missing was APPENDED - the old values keep their numbers");
+
+	char dirTemplate[] = "/tmp/sampledrum-tests-XXXXXX";
+	const char* dir = mkdtemp (dirTemplate);
+	check (dir != nullptr, "a scratch directory");
+	if (dir == nullptr)
+		return;
+	const std::string base = dir;
+
+	const std::vector<unsigned char> pcm = { 0x00, 0x40, 0x00, 0xC0 };   // +0.5, -0.5
+	const std::vector<unsigned char> wav = makeWav (1, 1, 44100, 16, pcm);
+	const std::string good = base + "/good.wav";
+	{
+		std::ofstream f (good, std::ios::binary);
+		f.write (reinterpret_cast<const char*> (wav.data ()), static_cast<std::streamsize> (wav.size ()));
+	}
+	const std::string empty = base + "/empty.wav";
+	{ std::ofstream f (empty, std::ios::binary); }
+
+	FileBytes bytes;
+	check (readWholeFile (good, kMaxFileBytes, bytes) == FileReadResult::Ok, "a real file reads Ok");
+	check (bytes && *bytes == wav,                     "... byte for byte");
+
+	check (readWholeFile (base + "/nope.wav", kMaxFileBytes, bytes) == FileReadResult::Missing,
+	       "no file at the path is Missing");
+	check (!bytes,                                     "... and gives no bytes");
+	check (readWholeFile ("", kMaxFileBytes, bytes) == FileReadResult::Missing, "an empty path is Missing");
+	check (readWholeFile (empty, kMaxFileBytes, bytes) == FileReadResult::Unreadable,
+	       "an empty file is Unreadable, not Missing");
+	check (readWholeFile (base, kMaxFileBytes, bytes) == FileReadResult::Unreadable,
+	       "a directory is Unreadable");
+	check (readWholeFile (good, wav.size () - 1, bytes) == FileReadResult::TooBig,
+	       "a file over the ceiling is TooBig");
+	check (readWholeFile (good, wav.size (), bytes) == FileReadResult::Ok,
+	       "a file exactly at the ceiling is Ok");
+
+	check (statusOfRead (FileReadResult::Missing) == SampleStatus::Missing,       "Missing -> Missing");
+	check (statusOfRead (FileReadResult::Unreadable) == SampleStatus::Unreadable, "Unreadable -> Unreadable");
+	check (statusOfRead (FileReadResult::TooBig) == SampleStatus::TooLong,        "TooBig -> TooLong");
+
+	SampleBuffer buffer;
+	check (loadWavFile (base + "/nope.wav", buffer) == SampleStatus::Missing,
+	       "loadWavFile tells a missing file apart");
+	check (loadWavFile (good, buffer) == SampleStatus::Loaded && buffer.frameCount == 2,
+	       "loadWavFile still loads a real one");
+
+	// THE EMBEDDED COPY IS ENOUGH: once the bytes are in hand, the file on
+	// disk can go and the cell still decodes to the same audio.
+	FileBytes kept;
+	readWholeFile (good, kMaxFileBytes, kept);
+	std::remove (good.c_str ());
+	SampleBuffer fromDisk, fromCopy;
+	check (loadWavFile (good, fromDisk) == SampleStatus::Missing, "the file is gone from disk");
+	check (kept && parseWav (kept->data (), kept->size (), fromCopy) == SampleStatus::Loaded
+	           && fromCopy.samples == std::vector<float> ({ 0.5f, 0.5f, -0.5f, -0.5f }),
+	       "... and the kept bytes still decode to the same audio");
+
+	std::remove (empty.c_str ());
+	rmdir (dir);
+}
+
+//------------------------------------------------------------------------
+// Cell-to-cell drags: the payload, and the embedded copy travelling
+//------------------------------------------------------------------------
+static FileBytes bytesOf (unsigned char seed)
+{
+	return std::make_shared<std::vector<unsigned char>> (std::vector<unsigned char> (16, seed));
+}
+
+static void testCellDrag ()
+{
+	const std::uint64_t me = 0x0123456789ABCDEFull;
+
+	{
+		const std::string packed = encodeCellDrag (me, 17, "/Users/andy/Kits/kick 01.wav");
+		std::uint64_t owner = 0; int cell = -1; std::string path;
+		check (decodeCellDrag (packed, &owner, &cell, &path), "a cell drag decodes");
+		check (owner == me && cell == 17 && path == "/Users/andy/Kits/kick 01.wav",
+		       "... owner, cell and path intact");
+		check (decodeCellDrag (packed + std::string (1, '\0'), nullptr, nullptr, &path)
+		       && path == "/Users/andy/Kits/kick 01.wav", "... with a trailing NUL from the platform");
+		check (decodeCellDrag (encodeCellDrag (0, 0, "/a.wav"), &owner, &cell, nullptr)
+		       && owner == 0 && cell == 0, "owner 0, cell 0");
+		check (decodeCellDrag (encodeCellDrag (~0ull, kCellCount - 1, "/a.wav"), &owner, &cell, nullptr)
+		       && owner == ~0ull && cell == kCellCount - 1, "the largest owner and last cell");
+	}
+	check (encodeCellDrag (me, 3, "").empty (),          "an empty cell encodes to nothing");
+	check (encodeCellDrag (me, -1, "/a.wav").empty (),   "a bad cell encodes to nothing");
+	check (encodeCellDrag (me, kCellCount, "/a.wav").empty (), "... at either end");
+	check (encodeCellDrag (me, 3, "/a\nb.wav").empty (), "a path with a newline encodes to nothing");
+
+	check (!decodeCellDrag ("/Users/andy/kick.wav", nullptr, nullptr, nullptr), "a plain path is not a cell drag");
+	check (!decodeCellDrag ("file:///Users/andy/kick.wav", nullptr, nullptr, nullptr), "nor is a file URL");
+	check (!decodeCellDrag ("", nullptr, nullptr, nullptr),                 "nor is nothing");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/3", nullptr, nullptr, nullptr), "no path");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/3\n", nullptr, nullptr, nullptr), "an empty path");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/\n/a.wav", nullptr, nullptr, nullptr), "no cell");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/32\n/a.wav", nullptr, nullptr, nullptr), "cell 32");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/99999999999999\n/a.wav", nullptr, nullptr, nullptr),
+	       "a huge cell, without overflow");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdef/3x\n/a.wav", nullptr, nullptr, nullptr), "junk after the cell");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcde/3\n/a.wav", nullptr, nullptr, nullptr), "a short owner");
+	check (!decodeCellDrag ("SampleDrum/cell:0123456789abcdeg/3\n/a.wav", nullptr, nullptr, nullptr), "a non-hex owner");
+	check (!decodeCellDrag ("Project6/slot:3\n/a.wav", nullptr, nullptr, nullptr), "Project6's pad drag is not ours");
+	check (wavPathFromDragText (encodeCellDrag (me, 3, "/a.wav")).empty (),
+	       "a cell drag is never mistaken for a file drop");
+
+	// THE CARRY RULE. Paths as the processor's mPaths would hold them.
+	const std::string kick = "/k.wav", snare = "/s.wav", hat = "/h.wav";
+	{
+		// MOVE into an empty cell: a copy to `to`, then `from` emptied.
+		CellFiles f;
+		f.keep (0, bytesOf (1));
+		f.replace (5, "", kick, 0, kick);
+		check (f.get (5) && (*f.get (5))[0] == 1, "a moved cell carries its embedded copy");
+		f.replace (0, kick, "", 5, kick);
+		check (!f.get (0),                        "... and the source lets go of it");
+		check (f.get (5) && (*f.get (5))[0] == 1, "... while the target keeps it");
+	}
+	{
+		// SWAP: to <- from's file; then from <- to's OLD file.
+		CellFiles f;
+		f.keep (0, bytesOf (1));                // kick in 0
+		f.keep (9, bytesOf (2));                // snare in 9
+		f.replace (9, snare, kick, 0, kick);
+		check (f.get (9) && (*f.get (9))[0] == 1, "swap, first half: the target gets the kick");
+		f.replace (0, kick, snare, 9, kick);    // 9 now holds the kick; its snare is PREVIOUS
+		check (f.get (0) && (*f.get (0))[0] == 2, "swap, second half: the source gets the snare from 'previous'");
+		check (f.get (9) && (*f.get (9))[0] == 1, "... and the target still has the kick");
+	}
+	{
+		// COPY: the source is untouched and both cells share the bytes.
+		CellFiles f;
+		f.keep (3, bytesOf (7));
+		f.replace (4, "", hat, 3, hat);
+		check (f.get (3) && f.get (4) && f.get (3) == f.get (4), "a copy shares the same immutable bytes");
+	}
+	{
+		// A FILE FROM OUTSIDE carries nothing, so loadCell reads the disk.
+		CellFiles f;
+		f.keep (0, bytesOf (1));
+		f.replace (0, kick, kick, -1, "");
+		check (!f.get (0), "a drop from outside - even of the same file - reads the disk afresh");
+	}
+	{
+		// A CLEAR lets go of the copy.
+		CellFiles f;
+		f.keep (6, bytesOf (1));
+		f.replace (6, kick, "", -1, "");
+		check (!f.get (6), "a cleared cell carries nothing into the next save");
+	}
+	{
+		// ONLY FOR THE FILE THE BYTES WERE READ FROM.
+		CellFiles f;
+		f.keep (0, bytesOf (1));
+		f.replace (5, "", snare, 0, kick);
+		check (!f.get (5), "a path that does not match the source carries nothing");
+	}
+	{
+		// THE PREVIOUS FILE LASTS ONE MESSAGE. After an unrelated change,
+		// a late second half finds nothing and reads the disk.
+		CellFiles f;
+		f.keep (9, bytesOf (2));
+		f.replace (9, snare, kick, -1, "");
+		f.replace (20, "", hat, -1, "");
+		f.replace (0, "", snare, 9, kick);
+		check (!f.get (0), "a held previous file is let go at the next cell message");
+	}
+	{
+		// setState wipes what was held.
+		CellFiles f;
+		f.keep (9, bytesOf (2));
+		f.replace (9, snare, kick, -1, "");
+		FileBytes none[kCellCount];
+		f.restore (none);
+		f.replace (0, "", snare, 9, "");
+		check (!f.get (0), "restore forgets the previous files");
+		FileBytes all[kCellCount];
+		f.keep (31, bytesOf (4));
+		f.snapshot (all);
+		check (all[31] && (*all[31])[0] == 4 && !all[30], "snapshot returns what is held");
+	}
+	{
+		CellFiles f;
+		f.replace (-1, "", kick, 0, kick);
+		f.replace (kCellCount, "", kick, 0, kick);
+		f.keep (kCellCount, bytesOf (1));
+		check (!f.get (-1) && !f.get (kCellCount), "bad cells are refused, not clamped");
+	}
+}
+
+//------------------------------------------------------------------------
 int main ()
 {
 	std::printf ("SampleDrum DSP tests\n");
@@ -1098,6 +1314,8 @@ int main ()
 	testChooseCell ();
 	testWav ();
 	testPaths ();
+	testPortability ();
+	testCellDrag ();
 	testSmootherStep ();
 	testUnityIsBitIdentical ();
 	testPlayback ();

@@ -28,6 +28,7 @@
 
 #include "public.sdk/source/vst/vsteditcontroller.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -39,7 +40,7 @@ class SampleDrumEditor;
 class SampleDrumController : public Steinberg::Vst::EditControllerEx1
 {
 public:
-	SampleDrumController () = default;
+	SampleDrumController ();
 	~SampleDrumController () SMTG_OVERRIDE = default;
 
 	static Steinberg::FUnknown* createInstance (void*)
@@ -72,8 +73,30 @@ public:
 	const std::string& cellPath (int cell) const;
 	SampleStatus cellStatus (int cell) const;
 
-	/** A file dropped on a cell, or "" to empty it. */
+	/** A file dropped on a cell from OUTSIDE, or "" to empty it. */
 	void setCellPath (int cell, const std::string& path);
+
+	/** A cell dragged onto another cell of THIS instance.
+
+	    `copy` false MOVES it, which is a SWAP: the two cells exchange
+	    files, so nothing is lost - the target's sample lands where the
+	    dragged one came from (or that cell empties, if the target was
+	    empty). `copy` true leaves the source as it was.
+
+	    THE LEVEL TRAVELS WITH THE SAMPLE, as Project6's pad settings do:
+	    it was set for that sound. The embedded copy travels too - each
+	    half names the cell its file came from. */
+	void moveCell (int from, int to, bool copy);
+
+	/** A cell EMPTIED from the panel (right-click menu or Option-click).
+	    The processor lets go of the embedded copy, so the next save no
+	    longer carries the file. THE CELL'S LEVEL STAYS, for the next
+	    file dropped on it - as a replaced file inherits it. */
+	void clearCell (int cell);
+
+	/** This instance's own random id, put in every cell drag so a drop
+	    can tell a drag from this instance from one from another. */
+	std::uint64_t instanceId () const { return mInstanceId; }
 	void auditionCell (int cell);
 	void requestActivity ();
 
@@ -83,6 +106,18 @@ public:
 
 private:
 	void refreshCellInEditors (int cell);
+
+	/** The one door every cell change goes through. `carriedFrom` is the
+	    source cell of a drag, or -1. */
+	void setCellPath (int cell, const std::string& path, int carriedFrom);
+
+	/** One parameter as a COMPLETE EDIT GESTURE - begin, set, perform,
+	    end - so the host records it and every open editor follows. Only
+	    when it changes: a gesture that writes a value over itself is an
+	    undo point that says nothing. */
+	void writeParam (Steinberg::Vst::ParamID tag, double normalized);
+
+	std::uint64_t mInstanceId = 0;
 
 	std::vector<SampleDrumEditor*> mEditors;
 

@@ -105,6 +105,75 @@ bool readState (IBStreamer& streamer, StreamState& state)
 			state.paths[i] = path;
 	}
 
+	state.complete = true;
+	return true;
+}
+
+//------------------------------------------------------------------------
+bool writeEmbedded (IBStreamer& streamer, const FileBytes* files)
+{
+	if (files == nullptr)
+		return false;
+
+	if (!streamer.writeInt32 (static_cast<int32> (kCellCount)))
+		return false;
+
+	for (int cell = 0; cell < kCellCount; ++cell)
+	{
+		const FileBytes& file = files[cell];
+		const std::size_t size = file ? file->size () : 0;
+
+		// Written as nothing rather than refused: a file this large could
+		// not have been loaded in the first place, and one bad cell must
+		// not cost the other thirty-one their copies.
+		const int32 length = (size <= kMaxFileBytes) ? static_cast<int32> (size) : 0;
+
+		if (!streamer.writeInt32 (length))
+			return false;
+		if (length > 0 && streamer.writeRaw (file->data (), length) != length)
+			return false;
+	}
+
+	return true;
+}
+
+//------------------------------------------------------------------------
+bool readEmbedded (IBStreamer& streamer, FileBytes* files)
+{
+	if (files == nullptr)
+		return false;
+
+	for (int cell = 0; cell < kCellCount; ++cell)
+		files[cell].reset ();
+
+	int32 count = 0;
+	if (!streamer.readInt32 (count))
+		return false;                       // saved before the block existed
+	if (count < 0 || count > 4096)
+		return false;
+
+	for (int32 i = 0; i < count; ++i)
+	{
+		int32 length = 0;
+		if (!streamer.readInt32 (length))
+			return false;
+		// CHECKED BEFORE ANY ALLOCATION, so a damaged length cannot ask
+		// for gigabytes.
+		if (length < 0 || static_cast<std::size_t> (length) > kMaxFileBytes)
+			return false;
+		if (length == 0)
+			continue;
+
+		auto bytes = std::make_shared<std::vector<unsigned char>> (static_cast<std::size_t> (length));
+		if (streamer.readRaw (bytes->data (), length) != length)
+			return false;
+
+		// A stream from a build with a bigger grid is read to the end and
+		// the extras dropped - the same rule as the paths.
+		if (isCellIndex (i))
+			files[i] = std::move (bytes);
+	}
+
 	return true;
 }
 

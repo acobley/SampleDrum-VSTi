@@ -128,6 +128,18 @@ void SampleDrumCellView::setAuditionHandler (std::function<void (int)> handler)
 }
 
 //------------------------------------------------------------------------
+void SampleDrumCellView::setMoveHandler (std::function<void (int, int, bool)> handler)
+{
+	mMoveHandler = std::move (handler);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::setClearHandler (std::function<void (int)> handler)
+{
+	mClearHandler = std::move (handler);
+}
+
+//------------------------------------------------------------------------
 void SampleDrumCellView::refreshTooltip ()
 {
 	std::string text;
@@ -138,7 +150,8 @@ void SampleDrumCellView::refreshTooltip ()
 		text = mPath;
 		if (mStatus != SampleStatus::Loaded)
 			text += std::string ("\nWill not play: ") + sampleStatusText (mStatus);
-		text += "\nClick to play, Option-click to empty";
+		text += "\nClick to play; drag to another cell to move it (hold Option to copy)"
+		        "\nRight-click or Option-click to empty";
 	}
 	setTooltipText (text.c_str ());
 }
@@ -211,22 +224,143 @@ void SampleDrumCellView::draw (CDrawContext* context)
 //------------------------------------------------------------------------
 void SampleDrumCellView::onMouseDownEvent (MouseDownEvent& event)
 {
+	// RIGHT-CLICK: the cell's menu, on a cell that holds something. On a
+	// Mac a Control-click arrives here as a right-click too - the
+	// platform's own convention for a context menu.
+	if (event.buttonState.isRight ())
+	{
+		if (!mPath.empty () && mClearHandler)
+		{
+			mPressed = false;
+			showCellMenu (event.mousePosition);
+			event.consumed = true;
+		}
+		return;
+	}
+
 	if (!event.buttonState.isLeft ())
+		return;
+
+	// CONSUMED EITHER WAY: it is what makes the frame send this view the
+	// move and up events that follow.
+	event.consumed = true;
+
+	mPressed        = true;
+	mDragStarted    = false;
+	mPressPoint     = event.mousePosition;
+	mClearOnRelease = event.modifiers.has (ModifierKey::Alt);
+
+	// A PLAIN CLICK PLAYS AT ONCE - see the banner for why here and not on
+	// release. An Option-press does not: it is an empty, or a copy-drag.
+	if (!mClearOnRelease && playable () && mAuditionHandler)
+		mAuditionHandler (mCell);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::onMouseMoveEvent (MouseMoveEvent& event)
+{
+	if (!mPressed || mDragStarted)
 		return;
 
 	event.consumed = true;
 
-	// OPTION-CLICK EMPTIES. A modifier rather than a plain right-click,
-	// so a stray click can never throw a sample away.
-	if (event.modifiers.has (ModifierKey::Alt))
+	// AN EMPTY CELL HAS NOTHING TO PICK UP.
+	if (mPath.empty ())
+		return;
+
+	const CCoord dx = event.mousePosition.x - mPressPoint.x;
+	const CCoord dy = event.mousePosition.y - mPressPoint.y;
+	if (std::fabs (dx) < kDragThreshold && std::fabs (dy) < kDragThreshold)
+		return;
+
+	// A DRAG. mPressed cleared FIRST, so the release that ends it cannot
+	// also be read as a click - and an Option-drag is a copy, never an
+	// empty.
+	mPressed        = false;
+	mDragStarted    = true;
+	mClearOnRelease = false;
+	beginCellDrag ();
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::onMouseUpEvent (MouseUpEvent& event)
+{
+	if (!mPressed)
 	{
-		if (!mPath.empty () && mPathHandler)
-			mPathHandler (mCell, std::string ());
+		// The tail of a drag, or a release whose press this view never saw.
+		mDragStarted = false;
+		mClearOnRelease = false;
 		return;
 	}
 
-	if (playable () && mAuditionHandler)
-		mAuditionHandler (mCell);
+	mPressed = false;
+	event.consumed = true;
+
+	// OPTION-CLICK EMPTIES - on release, having not moved.
+	if (mClearOnRelease)
+	{
+		mClearOnRelease = false;
+		if (!mPath.empty () && mClearHandler)
+			mClearHandler (mCell);
+	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::onMouseCancelEvent (MouseCancelEvent&)
+{
+	// A cancelled press is neither a click nor an empty.
+	mPressed        = false;
+	mDragStarted    = false;
+	mClearOnRelease = false;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::beginCellDrag ()
+{
+	const std::string payload = encodeCellDrag (mOwner, mCell, mPath);
+	if (payload.empty ())
+		return;
+
+	// THE TERMINATOR IS INCLUDED: the macOS layer builds the pasteboard
+	// item with stringWithUTF8String, which reads to a NUL and takes no
+	// length (Project6SlotView.cpp).
+	auto package = CDropSource::create (payload.c_str (),
+	                                    static_cast<uint32_t> (payload.size () + 1),
+	                                    IDataPackage::kText);
+	if (!package)
+		return;
+
+	doDrag (DragDescription (package));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::showCellMenu (const CPoint& where)
+{
+	auto* frame = getFrame ();
+	if (frame == nullptr || !mClearHandler)
+		return;
+
+	auto menu = makeOwned<COptionMenu> ();
+	menu->setStyle (COptionMenu::kPopupStyle);
+
+	const std::string title = "Clear cell (" + fileNameOf (mPath) + ")";
+	menu->addEntry (title.c_str ());
+
+	CPoint at (where);
+	localToFrame (at);
+
+	// THE CALLBACK RUNS LATER, after the menu closes - by which time the
+	// editor may have been shut. The handler (which captures the
+	// controller, not the editor) and the index are copied in, and `self`
+	// keeps this view alive until the callback has run.
+	const int index = mCell;
+	auto handler = mClearHandler;
+	SharedPointer<SampleDrumCellView> self (this);
+	menu->popup (frame, at, [self, index, handler] (COptionMenu* chosen)
+	{
+		if (chosen && chosen->getLastResult () == 0 && handler)
+			handler (index);
+	});
 }
 
 //------------------------------------------------------------------------
@@ -263,21 +397,74 @@ std::string SampleDrumCellView::firstWavPath (IDataPackage* package)
 }
 
 //------------------------------------------------------------------------
+bool SampleDrumCellView::cellDrag (IDataPackage* package, std::uint64_t& owner, int& from,
+                                   std::string& path)
+{
+	if (package == nullptr)
+		return false;
+
+	const uint32_t count = package->getCount ();
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		const void* buffer = nullptr;
+		IDataPackage::Type type = IDataPackage::kError;
+		const uint32_t size = package->getData (i, buffer, type);
+		if (type == IDataPackage::kError || buffer == nullptr || size == 0)
+			continue;
+
+		const char* chars = static_cast<const char*> (buffer);
+		if (decodeCellDrag (std::string (chars, ::strnlen (chars, size)), &owner, &from, &path))
+			return true;
+	}
+	return false;
+}
+
+//------------------------------------------------------------------------
+bool SampleDrumCellView::copyRequested (const Modifiers& modifiers)
+{
+	return modifiers.has (ModifierKey::Alt) || modifiers.has (ModifierKey::Control);
+}
+
+//------------------------------------------------------------------------
 DragOperation SampleDrumCellView::onDragEnter (DragEventData data)
 {
-	// Tested HERE, not only on the drop, so the pointer says no before
-	// the button is released. Lighting up for an .mp3 and then ignoring
-	// it is worse than never lighting up.
-	mDragOver = !firstWavPath (data.drag).empty ();
+	std::uint64_t owner = 0;
+	int from = -1;
+	std::string path;
+
+	if (cellDrag (data.drag, owner, from, path))
+	{
+		// A CELL DROPPED ON ITSELF IS NOT A DROP - lighting up would
+		// promise something. A cell from ANOTHER INSTANCE is a file by
+		// another name, and is accepted as one if it is a wav.
+		mDragIsOwnCell = (owner == mOwner);
+		mDragOver = mDragIsOwnCell ? (from != mCell) : isWavPath (path);
+	}
+	else
+	{
+		// Tested HERE, not only on the drop, so the pointer says no before
+		// the button is released. Lighting up for an .mp3 and then
+		// ignoring it is worse than never lighting up.
+		mDragIsOwnCell = false;
+		mDragOver = !firstWavPath (data.drag).empty ();
+	}
+
 	invalid ();
 	return onDragMove (data);
 }
 
 //------------------------------------------------------------------------
-DragOperation SampleDrumCellView::onDragMove (DragEventData /*data*/)
+DragOperation SampleDrumCellView::onDragMove (DragEventData data)
 {
+	if (!mDragOver)
+		return DragOperation::None;
+
 	// A file from outside is always a COPY - it stays where it is on disk.
-	return mDragOver ? DragOperation::Copy : DragOperation::None;
+	// Only a cell of this instance can MOVE, and the modifier is read
+	// live, so the cursor says which before the button comes up.
+	if (!mDragIsOwnCell)
+		return DragOperation::Copy;
+	return copyRequested (data.modifiers) ? DragOperation::Copy : DragOperation::Move;
 }
 
 //------------------------------------------------------------------------
@@ -296,6 +483,31 @@ bool SampleDrumCellView::onDrop (DragEventData data)
 	// taken off here or the cell stays lit for ever.
 	mDragOver = false;
 	invalid ();
+
+	// ANOTHER CELL first: its payload is this plug-in's own shape and
+	// cannot be mistaken for a file.
+	std::uint64_t owner = 0;
+	int from = -1;
+	std::string dragged;
+	if (cellDrag (data.drag, owner, from, dragged))
+	{
+		if (owner == mOwner)
+		{
+			if (from == mCell || !isCellIndex (from) || !mMoveHandler)
+				return false;
+			// THE MODIFIER IS READ AT THE DROP, the platform's own rule.
+			mMoveHandler (from, mCell, copyRequested (data.modifiers));
+			return true;
+		}
+
+		// FROM ANOTHER INSTANCE: its cell number means nothing here, and
+		// its embedded copy is in another processor. Taken as a drop of
+		// the path from outside - a copy, read from disk.
+		if (!isWavPath (dragged) || !mPathHandler)
+			return false;
+		mPathHandler (mCell, dragged);
+		return true;
+	}
 
 	const std::string path = firstWavPath (data.drag);
 	if (path.empty () || !mPathHandler)

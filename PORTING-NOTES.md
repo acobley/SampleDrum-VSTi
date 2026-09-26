@@ -43,8 +43,9 @@ This file outlives the session. Add to it as you go, not at the end.
 | Polyphony | 32 voices + 8 spares; the oldest is stolen with a 5 ms fade | The spares let a stolen voice fade instead of clicking. |
 | Sample rate | Linear interpolation to the host rate; step exactly 1 when rates match | At equal rates the output is the file's own samples, bit for bit. |
 | Files | WAV only: PCM 8/16/24/32, float 32/64, extensible, any channel count (mono duplicated); **20 s cap** | Reader lifted from Project6 without the tempo/MIDI parts. |
+| Portability (fifth change) | **Every loaded file is embedded in the project**, byte for byte, and the embedded copy wins over the disk; files under `/Users/Shared/SampleDrum/Samples` are factory content and never embedded. See §10. | As Project6 1.2.0.0: a project must open on another Mac. |
 | Cell level (third commit) | **A level bar under every cell**, as under each Project6 pad: −40 to +12 dB, default 0 dB, **the bottom of the bar is silence**. 32 automatable parameters, ids 1–32 in cell order (`cellLevelParam (cell)`), titled e.g. "Kick 96-127 Level". Applies live to a ringing sample, smoothed like the trim. Drag with Shift for fine; while dragging, the cell reads out the level ("off" at the bottom). | Project6's range and law, for its reason: a component level that may need lifting, in front of the Output Trim that answers clipping. |
-| Panel | Click a loaded cell = audition; **Option-click = empty it**; cells light while sounding and **flash on every hit** | A modifier for clearing, so a stray click cannot lose a sample. Hit counting so a hi-hat shorter than one redraw still shows. |
+| Panel | Click a loaded cell = audition (**on press**); **drag a cell onto another = move, which swaps** the two (the cell level travels with the sample); **Option or Control held at the drop = copy**; **right-click / Control-click → "Clear cell (name)"**, and Option-click (on release, without moving) also empties; cells light while sounding and **flash on every hit** | Emptying needs a menu or a modifier, so a stray click cannot lose a sample. Option-click fires on *release* so Option-press-and-drag is a copy, not an emptied source. Audition stays on press (unlike Project6's pads, whose launch moved to release) because a one-shot heard while being picked up is harmless. Hit counting so a hi-hat shorter than one redraw still shows. |
 
 ---
 
@@ -161,7 +162,9 @@ negative controls (half gain) are confirmed *not* identical.
   — the processor's status message carries the path, because
   `setState` and `setComponentState` arrive in either order.
 - **A failed load keeps its path**, shows it in red with the reason, and
-  the project remembers it (the drive may just be unplugged).
+  the project remembers it (the drive may just be unplugged). Since §10,
+  "file not found" (`SampleStatus::Missing`) is told apart from "could not
+  be read" — the first is the one a person can fix.
 - **A cell's level is smoothed once per block, not once per voice.** The
   one-pole is advanced in closed form over the block and every voice on
   the cell ramps linearly between the two ends, so two voices on one cell
@@ -191,7 +194,42 @@ because VSTGUI never calls `onDragLeave` after a drop.
 
 ---
 
-## 7. Verification actually run (2026-09-21, from the Linux VM)
+## 7. Verification actually run (from the Linux VM)
+
+### Sixth change (2026-09-26) — cell-to-cell drag and clearing (§11)
+
+All twelve `.cpp` files compile against the SDK and VSTGUI (no new
+warnings); **0 unresolved `SampleDrum::` symbols** out of 68. DSP suite:
+**405 checks, 0 failures** — adds the drag payload (round trip, trailing
+NUL, every refusal: plain path, file URL, no/empty path, no cell, cell 32,
+a 14-digit cell without overflow, junk, short or non-hex owner, Project6's
+payload; and a cell drag is never read as a file drop) and the carry rule:
+move, both halves of a swap, copy sharing bytes, a drop from outside
+reading the disk, a clear letting go, a mismatched path carrying nothing,
+the previous file lasting one message, `restore` forgetting, bad cells
+refused. State suite unchanged: 21 / 0.
+
+### Fifth change (2026-09-26) — projects that travel (§10)
+
+All twelve `.cpp` files compile against the SDK and VSTGUI (no new
+warnings; only the known `-Wsign-compare`); **0 unresolved `SampleDrum::`
+symbols** out of 56. DSP suite: **369 checks, 0 failures** — adds
+`isFactoryPath` (inside the root only; not the root, not a sibling whose
+name starts with it), `readWholeFile` telling Ok / Missing / Unreadable
+(empty file, directory) / TooBig apart at the exact ceiling, `Missing`
+appended with the old values unchanged, and a file deleted from disk whose
+kept bytes still decode to the same audio. One existing check changed on
+purpose: a missing file now reports `Missing`, not `Unreadable`.
+
+New **`tests/StateTests.cpp`** (needs the SDK; the command is in its
+banner — add `-framework CoreFoundation` on macOS): **21 checks, 0
+failures** — paths and files round-trip byte for byte with nothing left
+unread; `readState` alone (the controller) stops with the audio unread; a
+stream from before the block reads as before and every cell falls back to
+disk; a truncated block keeps what came before the damage; negative and
+2 GB lengths stop without allocating; a stream cut inside the paths is
+not `complete`; an empty kit costs 132 bytes.
+
 
 ### Fourth commit — a note per column
 
@@ -304,6 +342,162 @@ not export the required 'GetPluginFactory' function"*, re-run
      hard → the lit cell walks down the column;
    - open HH then closed HH → the open hat cuts off;
    - save, reopen the project → all cells come back with their files;
-   - rename a sample file on disk, reopen → that cell shows its name in
-     red with "could not be read".
+   - rename a sample file on disk, reopen → **the cell still plays** (the
+     project carries it); the tooltip still shows the old path;
+   - **portability:** save a project, copy it to another Mac (or another
+     user account) without the samples, open it → every cell plays;
+   - a project saved *before* this change, with a file renamed → that
+     cell shows its name in red with "file not found"; drop the file
+     again, save, rename it once more, reopen → it plays;
+   - edit a sample on disk after saving → the project still plays the
+     old version until the file is dropped on the cell again;
+   - Reaper: with a full 32-cell kit, check that parameter edits (undo
+     points) don't feel slow;
+   - **drag a cell onto an empty cell** → it moves, the source empties,
+     its level bar goes with it; onto a loaded cell → they swap; hold
+     Option (or Control) at the drop → copy; the cursor shows move/copy;
+   - drag a cell onto itself → nothing lights, nothing happens;
+   - press Option on a cell and drag → a copy, and the source is NOT
+     emptied; Option-click without moving → empties;
+   - right-click and Control-click a loaded cell → "Clear cell (name)";
+     choosing it empties the cell and its level stays; close the editor
+     with the menu open → no crash;
+   - **portability of a move:** on a Mac with only the project (no
+     samples), swap two cells, save, reopen → both still play;
+   - two SampleDrum instances: drag a cell from one window to the other →
+     the target takes it as a file (copy) and the source is untouched —
+     and the target's own cell with that number is NOT moved;
+   - drag a cell out to the Finder → nothing is created (the payload is
+     text, not a file).
 5. Record the results here.
+
+## 10. Projects that travel: embedded files and a factory folder (2026-09-26)
+
+A cell remembered its file by absolute path, and a path means nothing on
+somebody else's Mac — a project handed over lost every cell. This follows
+**Project6 1.2.0.0** (its PORTING-NOTES §21, commit `6594bec`) with the same
+two mechanisms. Read §21 there for the options rejected; the one that
+matters is that samples **must not** be copied into `SampleDrum.vst3`
+(signature, `/Library` permissions, reinstalls, and the AU's separate
+embedded copy of the VST3).
+
+**Everything is embedded.** One block is appended to the state stream after
+the paths: a cell count, then 32 length-prefixed blobs, each the cell's
+`.wav` **exactly as it was on disk** (`writeEmbedded` / `readEmbedded` in
+`SampleDrumState`). Zero length = nothing embedded: an empty cell, a factory
+file, or a file that did not load.
+
+**Factory files are not.** `kFactorySampleRoot` =
+`/Users/Shared/SampleDrum/Samples` (`SampleDrumSample.h`). `/Users/Shared`
+is the same path on every Mac, so a cell loaded from there needs nothing
+carried. `isFactoryPath` is textual, so the answer is the same on a machine
+without the content installed. **There is no installer yet**; when one is
+built, fill that folder from a `samples/` directory as an optional
+component, exactly as Project6's `build-installer.sh` does, and have it
+refuse to run if its destination and `kFactorySampleRoot` disagree.
+**Decide before the first release** — once a project is saved referring to
+the root, moving it breaks those projects.
+
+### The decisions inside it
+
+- **`kStateVersion` stays 1.** This file's own rule: bump only for a change
+  "stop early, keep defaults" cannot absorb. An appended block is exactly
+  that — a reader without it stops after the paths and reads the disk. (This
+  differs from Project6, which bumped to 10; there the version is
+  informational, here a newer version is *refused*.)
+- **Last in the stream**, so the controller's `setComponentState`, which
+  calls `readState` alone, never reads the audio. Anything appended later
+  goes **after** this block.
+- **`StreamState::complete`** is set only when `readState` reached the end
+  of the path block. The processor reads the embedded block only then —
+  after an early stop the stream is mid-block and would be read as garbage.
+  (Project6 doesn't have this guard; worth back-porting.)
+- **The embedded copy wins.** `loadCell` decodes `mFiles[cell]` if the
+  project carried it and reads the disk only if not. **A drop from the
+  Finder always reads the disk afresh** (`notify` clears `mFiles[cell]`
+  first) — that is how an edited sample is brought back in.
+- **Bytes are held in memory** (`mFiles`, shared + immutable, under
+  `mFilesLock`) rather than re-read at save time, since hosts call
+  `getState` often (Reaper, for every undo point). `getState` snapshots the
+  32 pointers under the lock and streams outside it. The audio thread never
+  touches `mFiles`. Cost: the raw files in memory alongside the decoded
+  float — small for drum hits; the 20 s cap bounds a stray long file.
+- **Only a file that loaded is kept**, so a broken file is not carried to
+  somebody else; the project keeps naming its path.
+- **`SampleStatus::Missing`** ("file not found") is **appended**;
+  `kLastSampleStatus` marks the end, and the controller's range check uses
+  it (it hard-coded `NoFrames` before, and would have dropped the new
+  status). `readWholeFile` `stat`s first to tell Missing from Unreadable.
+- **Moved cells carry their bytes** (sixth change, §11): each cell message
+  from a drag names its source cell (`kSampleDrumCellFromAttribute`), and
+  `CellFiles::replace` carries the embedded copy across, keeping each
+  cell's previous file for the second half of a swap.
+
+### What it does not do
+
+- **No relink.** A cell from a project saved before this change whose file
+  is missing says "file not found"; drop the file again and the next save
+  embeds it.
+- **A drag from another SampleDrum instance** re-reads the path from disk
+  (its embedded copy is in the other processor). On the machine that made
+  the project the file is there; on a recipient's it may not be.
+- **No switch to turn embedding off.** Measure in Reaper with a full kit of
+  long samples before adding one; the format already allows "nothing
+  embedded" per cell.
+
+## 11. Cell-to-cell drag and clearing (2026-09-26, sixth change)
+
+Ported from Project6's pad drag (`SpySampleSlot`, `moveSlot`), its
+right-click "Clear pad" (commit `b8a3e5e`), and the embedded-copy carry
+from 1.2.0.0 (`6594bec`). Where SampleDrum differs, it is said here.
+
+**Gestures** — `SampleDrumCellView`:
+
+- A left press **auditions at once** (not Option) and waits to see whether
+  it is a click or a drag; past **4 px** it becomes a drag
+  (`beginCellDrag`). Project6 moved its launch to release because a loop
+  started by a pick-up would keep running; a one-shot doesn't.
+- **Move = swap, Option or Control at the drop = copy**, read live in
+  `onDragMove` so the cursor badge is right, and again at the drop.
+  Control as well as Option because macOS turns a Control-*click* into a
+  right-click, but a Control held *during* a drag arrives as Control.
+- **Option-click empties on release**, not press — otherwise pressing
+  Option to start a copy-drag would empty the source first. This is the
+  one real conflict between the old gesture and the new one.
+- **Right-click / Control-click** a loaded cell → `COptionMenu` with one
+  entry, "Clear cell (*file name*)". The callback captures the
+  **controller**, not the editor (the editor may be closed by the time the
+  menu returns), and a `SharedPointer` to the view keeps it alive.
+
+**The payload** — `encodeCellDrag` / `decodeCellDrag`, SDK-free in
+`SampleDrumSample`: `SampleDrum/cell:<owner 16 hex>/<cell>\n<path>`, as text
+with the NUL included (the macOS layer reads to a NUL). **The owner is new
+relative to Project6**, whose payload has only the index: there, a pad
+dragged from one Project6 window onto another calls `moveSlot (from, to)`
+on the *target* instance, which moves the target's own pad `from`. Here a
+foreign owner is treated as a file dropped from outside (copy, read from
+disk). The owner is a random 64-bit id per controller (`instanceId()`), not
+an address — sandboxed hosts can give two instances the same address.
+**Back-port this to Project6.**
+
+**The move** — `SampleDrumController::moveCell`: levels first (both read
+before either is written, or the swap copies one value to both), each as a
+full begin/perform/end gesture and only if it changed; then the paths
+through the one door, `setCellPath (cell, path, carriedFrom)`. **The cell
+level travels with the sample**, as Project6's pad settings do; on a
+**clear the level stays** for the next file, as on a replacement. Nothing
+has to be stopped by hand (Project6 stops pads first): replacing a cell's
+buffer already ends its voices via `syncCells`.
+
+**The carry** — `CellFiles` (SDK-free, `SampleDrumSample`), replacing the
+processor's bare `mFiles` + lock so the rule can be unit-tested without a
+host. `replace (cell, oldPath, newPath, from, fromPathNow)` carries
+`from`'s bytes only if the path matches, from `from` as it is now or from
+what it held before its last change — which is where the second half of a
+swap finds its file. Only **one** previous file is kept, until the next
+cell message. `restore` (setState) forgets them.
+
+**What the processor does on a clear:** the message has no path, so
+`replace` leaves the cell with nothing and the next save no longer carries
+the file.
+

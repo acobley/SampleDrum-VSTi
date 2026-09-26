@@ -12,7 +12,9 @@
 #include "pluginterfaces/base/ustring.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <random>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -87,6 +89,18 @@ private:
 };
 
 } // anonymous namespace
+
+//------------------------------------------------------------------------
+SampleDrumController::SampleDrumController ()
+{
+	// RANDOM, not the object's address: two instances in two processes
+	// (a host that sandboxes plug-ins) can have the same address. The
+	// clock is mixed in for a random_device that is deterministic.
+	std::random_device device;
+	mInstanceId = (static_cast<std::uint64_t> (device ()) << 32) ^ device ()
+	              ^ static_cast<std::uint64_t> (
+	                    std::chrono::steady_clock::now ().time_since_epoch ().count ());
+}
 
 //------------------------------------------------------------------------
 tresult PLUGIN_API SampleDrumController::initialize (FUnknown* context)
@@ -191,7 +205,7 @@ tresult PLUGIN_API SampleDrumController::notify (IMessage* message)
 		if (message->getAttributes ()->getInt (kSampleDrumCellIndexAttribute, cell) == kResultOk
 		    && message->getAttributes ()->getInt (kSampleDrumCellStatusAttribute, status) == kResultOk
 		    && isCellIndex (static_cast<int> (cell))
-		    && status >= 0 && status <= static_cast<int64> (SampleStatus::NoFrames))
+		    && status >= 0 && status <= static_cast<int64> (kLastSampleStatus))
 		{
 			std::string path;
 			const void* bytes = nullptr;
@@ -247,6 +261,12 @@ SampleStatus SampleDrumController::cellStatus (int cell) const
 //------------------------------------------------------------------------
 void SampleDrumController::setCellPath (int cell, const std::string& path)
 {
+	setCellPath (cell, path, -1);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::setCellPath (int cell, const std::string& path, int carriedFrom)
+{
 	if (!isCellIndex (cell))
 		return;
 
@@ -263,8 +283,71 @@ void SampleDrumController::setCellPath (int cell, const std::string& path)
 		if (!path.empty ())
 			message->getAttributes ()->setBinary (kSampleDrumCellPathAttribute, path.data (),
 			                                      static_cast<uint32> (path.size ()));
+
+		// Only for a drag between cells - see kSampleDrumCellFromAttribute.
+		if (isCellIndex (carriedFrom))
+			message->getAttributes ()->setInt (kSampleDrumCellFromAttribute, carriedFrom);
+
 		sendMessage (message);
 	}
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::writeParam (ParamID tag, double normalized)
+{
+	const double clamped = std::min (1.0, std::max (0.0, normalized));
+	if (getParamNormalized (tag) == clamped)
+		return;
+
+	beginEdit (tag);
+	setParamNormalized (tag, clamped);
+	performEdit (tag, clamped);
+	endEdit (tag);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::moveCell (int from, int to, bool copy)
+{
+	if (!isCellIndex (from) || !isCellIndex (to) || from == to)
+		return;
+
+	// NOTHING TO MOVE: an empty cell cannot be picked up - the view
+	// refuses - so this is against a source emptied while in flight.
+	const std::string fromPath = mPaths[from];
+	if (fromPath.empty ())
+		return;
+	const std::string toPath = mPaths[to];
+
+	// THE LEVELS BEFORE THE PATHS, so the path change is the last thing
+	// and every editor it refreshes sees a cell that has finished moving.
+	// READ BOTH BEFORE WRITING EITHER, or a swap reads back the value it
+	// has just written and both cells end up the same.
+	const ParamID fromLevel = cellLevelParam (from);
+	const ParamID toLevel   = cellLevelParam (to);
+	const double sourceLevel = getParamNormalized (fromLevel);
+	const double targetLevel = getParamNormalized (toLevel);
+	writeParam (toLevel, sourceLevel);
+	if (!copy)
+		writeParam (fromLevel, targetLevel);
+
+	// EACH HALF NAMES THE CELL ITS FILE CAME FROM, so the processor
+	// carries the embedded copy rather than re-reading a path that may
+	// not exist on this machine. The swap's second half names `to`,
+	// which the first half has already replaced - CellFiles keeps each
+	// cell's previous file for exactly that. A voice still ringing on
+	// either cell is ended by the DSP's syncCells, as for any replacement.
+	setCellPath (to, fromPath, from);
+	if (!copy)
+		setCellPath (from, toPath, to);     // the SWAP - may be empty, which empties it
+}
+
+//------------------------------------------------------------------------
+void SampleDrumController::clearCell (int cell)
+{
+	if (!isCellIndex (cell) || mPaths[cell].empty ())
+		return;
+
+	setCellPath (cell, std::string (), -1);
 }
 
 //------------------------------------------------------------------------

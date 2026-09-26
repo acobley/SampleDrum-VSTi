@@ -176,6 +176,21 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 				if (mController)
 					mController->auditionCell (index);
 			});
+			view->setMoveHandler ([this] (int from, int to, bool copy)
+			{
+				if (mController)
+					mController->moveCell (from, to, copy);
+			});
+
+			// "Clear cell" from the right-click menu, and Option-click.
+			// THE CONTROLLER IS CAPTURED, NOT THE EDITOR: the menu calls
+			// back after it closes, and the controller outlives every
+			// editor window, where this one may already be shut.
+			if (auto* controller = mController)
+			{
+				view->setOwner (controller->instanceId ());
+				view->setClearHandler ([controller] (int index) { controller->clearCell (index); });
+			}
 
 			mCells[cell] = view;
 			frame->addView (view);
@@ -211,8 +226,8 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 
 	addLabel (CRect (kGridLeft + kSliderWidth + 12, kSliderTop, kEditorWidth - kMargin,
 	                 kSliderTop + kSliderHeight),
-	          "Drop .wav files on the cells.  Click to play, Option-click to empty.  "
-	          "Drag the bar under a cell for its level.",
+	          "Drop .wav on a cell.  Click: play.  Drag to another cell: move (Option: copy).  "
+	          "Right-click: empty.  Bar under a cell: level.",
 	          kValue, kLeftText);
 
 	mTimer = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) { onTimer (); }, kTimerMs, true);

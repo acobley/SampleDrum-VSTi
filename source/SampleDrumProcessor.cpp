@@ -347,13 +347,44 @@ void SampleDrumProcessor::loadCell (int cell)
 	SampleStatus status = SampleStatus::Empty;
 	std::shared_ptr<const SampleBuffer> sample;
 
-	if (!path.empty ())
+	// THE BYTES: the project's embedded copy if it has one, else the disk.
+	// Embedded first, because a project should sound as it was saved - on
+	// this machine or another, whatever has happened to the file since.
+	FileBytes bytes = mFiles.get (cell);
+
+	if (path.empty ())
 	{
-		SampleBuffer buffer;
-		status = isWavPath (path) ? loadWavFile (path, buffer) : SampleStatus::NotWave;
-		if (status == SampleStatus::Loaded)
-			sample = std::make_shared<const SampleBuffer> (std::move (buffer));
+		bytes.reset ();
 	}
+	else if (!isWavPath (path))
+	{
+		bytes.reset ();
+		status = SampleStatus::NotWave;
+	}
+	else
+	{
+		if (!bytes)
+		{
+			const FileReadResult read = readWholeFile (path, kMaxFileBytes, bytes);
+			if (read != FileReadResult::Ok)
+				status = statusOfRead (read);
+		}
+
+		if (bytes)
+		{
+			SampleBuffer buffer;
+			status = parseWav (bytes->data (), bytes->size (), buffer);
+			if (status == SampleStatus::Loaded)
+				sample = std::make_shared<const SampleBuffer> (std::move (buffer));
+		}
+	}
+
+	// KEEP THE BYTES FOR EMBEDDING - only for a file that actually loaded,
+	// and never for a factory file, which every recipient already has. A
+	// file that will not parse is not worth carrying to someone else; the
+	// project goes on naming its path, the most useful thing it can do.
+	mFiles.keep (cell, (status == SampleStatus::Loaded && !isFactoryPath (path))
+	                       ? std::move (bytes) : FileBytes ());
 
 	// A FAILED LOAD KEEPS ITS PATH. The cell goes on showing the name and
 	// the project goes on remembering it - the file may be on a drive
@@ -497,6 +528,20 @@ tresult PLUGIN_API SampleDrumProcessor::notify (IMessage* message)
 			path.assign (static_cast<const char*> (bytes), size);
 		}
 
+		// A CELL DRAGGED FROM ANOTHER brings that cell's embedded bytes -
+		// see kSampleDrumCellFromAttribute and CellFiles::replace, which
+		// also keeps what this cell held for the second half of a swap. A
+		// DROP FROM OUTSIDE names no cell, carries nothing, and so reads
+		// the disk afresh - which is also how a sample edited since it was
+		// embedded is brought back in: drop it again. A CLEAR (empty path)
+		// lets the embedded copy go, so the next save no longer carries it.
+		int64 from = -1;
+		message->getAttributes ()->getInt (kSampleDrumCellFromAttribute, from);
+		const int fromCell = isCellIndex (static_cast<int> (from)) ? static_cast<int> (from) : -1;
+
+		mFiles.replace (static_cast<int> (cell), mPaths[cell], path, fromCell,
+		                fromCell >= 0 ? mPaths[fromCell] : std::string ());
+
 		// notify() is the UI thread, the only reason it may open a file.
 		mPaths[cell] = path;
 		loadCell (static_cast<int> (cell));
@@ -523,7 +568,18 @@ tresult PLUGIN_API SampleDrumProcessor::getState (IBStream* state)
 	for (int cell = 0; cell < kCellCount; ++cell)
 		out.paths[cell] = mPaths[cell];
 
-	return writeState (streamer, out) ? kResultOk : kResultFalse;
+	if (!writeState (streamer, out))
+		return kResultFalse;
+
+	// THE FILES THEMSELVES, last - see writeEmbedded. The 32 pointers are
+	// snapshotted under the lock and streamed outside it: the bytes are
+	// immutable, so a cell replaced mid-save only means this save carries
+	// the old file. Holding the lock for the whole write would stall a
+	// drop on the panel behind the save.
+	FileBytes files[kCellCount];
+	mFiles.snapshot (files);
+
+	return writeEmbedded (streamer, files) ? kResultOk : kResultFalse;
 }
 
 //------------------------------------------------------------------------
@@ -546,8 +602,20 @@ tresult PLUGIN_API SampleDrumProcessor::setState (IBStream* state)
 		applyParam (kParams[i].id, in.params[i]);
 	mBypass = in.bypass;
 
-	// Every cell reloaded, including ones that did not change: the file
-	// on disk may have. setState is the UI thread, so reading is allowed.
+	// The embedded files. readEmbedded empties all 32 first, so a project
+	// saved before the block existed leaves every cell to be read from
+	// disk exactly as before - and the NEXT save embeds them.
+	{
+		FileBytes files[kCellCount];
+		if (in.complete)
+			readEmbedded (streamer, files);
+
+		mFiles.restore (files);
+	}
+
+	// Every cell reloaded, including ones that did not change - from the
+	// embedded copy where the project carries one, from disk where it does
+	// not. setState is the UI thread, so reading is allowed.
 	for (int cell = 0; cell < kCellCount; ++cell)
 	{
 		mPaths[cell] = in.paths[cell];

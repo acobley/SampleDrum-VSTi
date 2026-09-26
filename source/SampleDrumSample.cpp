@@ -12,8 +12,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sys/stat.h>
 
 namespace SampleDrum {
 
@@ -174,6 +176,7 @@ const char* sampleStatusText (SampleStatus status)
 		case SampleStatus::UnsupportedFormat: return "unsupported WAV format";
 		case SampleStatus::TooLong:           return "longer than 20 seconds";
 		case SampleStatus::NoFrames:          return "no audio in the file";
+		case SampleStatus::Missing:           return "file not found";
 	}
 	return "unknown";
 }
@@ -294,30 +297,194 @@ SampleStatus loadWavFile (const std::string& path, SampleBuffer& out)
 	if (path.empty ())
 		return SampleStatus::Empty;
 
+	FileBytes bytes;
+	const FileReadResult read = readWholeFile (path, kMaxFileBytes, bytes);
+	if (read != FileReadResult::Ok)
+		return statusOfRead (read);
+
+	return parseWav (bytes->data (), bytes->size (), out);
+}
+
+//------------------------------------------------------------------------
+bool isFactoryPath (const std::string& path)
+{
+	const std::string root = std::string (kFactorySampleRoot) + "/";
+	return path.size () > root.size () && path.compare (0, root.size (), root) == 0;
+}
+
+//------------------------------------------------------------------------
+FileReadResult readWholeFile (const std::string& path, std::size_t maxBytes, FileBytes& out)
+{
+	out.reset ();
+
+	if (path.empty ())
+		return FileReadResult::Missing;
+
+	// stat FIRST, so "not there" and "there but unreadable" are told
+	// apart. An ifstream that fails to open says nothing about which.
+	struct stat info {};
+	if (::stat (path.c_str (), &info) != 0)
+		return FileReadResult::Missing;
+	if (!S_ISREG (info.st_mode) || info.st_size <= 0)
+		return FileReadResult::Unreadable;
+	if (static_cast<unsigned long long> (info.st_size) > maxBytes)
+		return FileReadResult::TooBig;
+
 	std::ifstream file (path, std::ios::binary);
 	if (!file)
-		return SampleStatus::Unreadable;
+		return FileReadResult::Unreadable;
 
-	file.seekg (0, std::ios::end);
-	const std::streamoff length = file.tellg ();
-	file.seekg (0, std::ios::beg);
+	auto bytes = std::make_shared<std::vector<unsigned char>> (
+		static_cast<std::size_t> (info.st_size));
+	if (!file.read (reinterpret_cast<char*> (bytes->data ()),
+	                static_cast<std::streamsize> (bytes->size ())))
+		return FileReadResult::Unreadable;
 
-	if (length <= 0)
-		return SampleStatus::Unreadable;
+	out = std::move (bytes);
+	return FileReadResult::Ok;
+}
 
-	// A ceiling on what is read at all, before any header is trusted, so
-	// a pathological file cannot ask for an arbitrary allocation. The
-	// real limit is kMaxSampleSeconds; 20 s of 8-channel 64-bit float at
-	// 192 k is under 250 MB.
-	constexpr std::streamoff kMaxFileBytes = 256ll * 1024ll * 1024ll;
-	if (length > kMaxFileBytes)
-		return SampleStatus::TooLong;
+//------------------------------------------------------------------------
+SampleStatus statusOfRead (FileReadResult result)
+{
+	switch (result)
+	{
+		case FileReadResult::Ok:         return SampleStatus::Loaded;
+		case FileReadResult::Missing:    return SampleStatus::Missing;
+		case FileReadResult::Unreadable: return SampleStatus::Unreadable;
+		case FileReadResult::TooBig:     return SampleStatus::TooLong;
+	}
+	return SampleStatus::Unreadable;
+}
 
-	std::vector<unsigned char> bytes (static_cast<std::size_t> (length));
-	if (!file.read (reinterpret_cast<char*> (bytes.data ()), length))
-		return SampleStatus::Unreadable;
+//------------------------------------------------------------------------
+void CellFiles::replace (int cell, const std::string& oldPath, const std::string& newPath,
+                         int from, const std::string& fromPathNow)
+{
+	if (!isCellIndex (cell))
+		return;
 
-	return parseWav (bytes.data (), bytes.size (), out);
+	std::lock_guard<std::mutex> hold (mLock);
+
+	FileBytes carried;
+	if (!newPath.empty () && isCellIndex (from) && from != cell)
+	{
+		if (fromPathNow == newPath && mFiles[from])
+			carried = mFiles[from];
+		else if (mPrevious[from].path == newPath)
+			carried = mPrevious[from].bytes;
+	}
+
+	// ONLY ONE PREVIOUS FILE IS WORTH KEEPING: the one the message after
+	// this might ask for. Anything older is let go, or every sample ever
+	// replaced would stay in memory.
+	for (int c = 0; c < kCellCount; ++c)
+		if (c != from)
+			mPrevious[c] = Held ();
+
+	mPrevious[cell] = Held { oldPath, std::move (mFiles[cell]) };
+	mFiles[cell] = std::move (carried);
+}
+
+//------------------------------------------------------------------------
+FileBytes CellFiles::get (int cell) const
+{
+	if (!isCellIndex (cell))
+		return FileBytes ();
+	std::lock_guard<std::mutex> hold (mLock);
+	return mFiles[cell];
+}
+
+//------------------------------------------------------------------------
+void CellFiles::keep (int cell, FileBytes bytes)
+{
+	if (!isCellIndex (cell))
+		return;
+	std::lock_guard<std::mutex> hold (mLock);
+	mFiles[cell] = std::move (bytes);
+}
+
+//------------------------------------------------------------------------
+void CellFiles::snapshot (FileBytes* out) const
+{
+	std::lock_guard<std::mutex> hold (mLock);
+	for (int c = 0; c < kCellCount; ++c)
+		out[c] = mFiles[c];
+}
+
+//------------------------------------------------------------------------
+void CellFiles::restore (FileBytes* in)
+{
+	std::lock_guard<std::mutex> hold (mLock);
+	for (int c = 0; c < kCellCount; ++c)
+	{
+		mFiles[c] = std::move (in[c]);
+		mPrevious[c] = Held ();
+	}
+}
+
+//------------------------------------------------------------------------
+const char* const kCellDragPrefix = "SampleDrum/cell:";
+
+//------------------------------------------------------------------------
+std::string encodeCellDrag (std::uint64_t owner, int cell, const std::string& path)
+{
+	if (!isCellIndex (cell) || path.empty () || path.find ('\n') != std::string::npos)
+		return std::string ();
+
+	char head[64] = {};
+	std::snprintf (head, sizeof (head), "%s%016llx/%d\n", kCellDragPrefix,
+	               static_cast<unsigned long long> (owner), cell);
+	return std::string (head) + path;
+}
+
+//------------------------------------------------------------------------
+bool decodeCellDrag (const std::string& text, std::uint64_t* owner, int* cell, std::string* path)
+{
+	const std::string prefix (kCellDragPrefix);
+	if (text.compare (0, prefix.size (), prefix) != 0)
+		return false;
+
+	// PARSED BY HAND, never with stoi/stoull, which throw - an exception
+	// crossing a platform drag callback is a crash.
+	std::size_t at = prefix.size ();
+	std::uint64_t id = 0;
+	for (int i = 0; i < 16; ++i, ++at)
+	{
+		const int digit = (at < text.size ()) ? hexDigit (text[at]) : -1;
+		if (digit < 0)
+			return false;
+		id = (id << 4) | static_cast<std::uint64_t> (digit);
+	}
+	if (at >= text.size () || text[at] != '/')
+		return false;
+	++at;
+
+	int value = 0;
+	std::size_t digits = 0;
+	while (at < text.size () && text[at] >= '0' && text[at] <= '9')
+	{
+		value = value * 10 + (text[at] - '0');
+		if (value >= kCellCount)                  // cannot be a cell; stop before overflow
+			return false;
+		++at;
+		++digits;
+	}
+	if (digits == 0 || at >= text.size () || text[at] != '\n')
+		return false;
+
+	// The payload may arrive with trailing NULs or a newline added by a
+	// platform layer; neither can be part of a path.
+	std::string found = text.substr (at + 1);
+	while (!found.empty () && (found.back () == '\0' || found.back () == '\n' || found.back () == '\r'))
+		found.pop_back ();
+	if (found.empty () || found.find ('\n') != std::string::npos)
+		return false;
+
+	if (owner) *owner = id;
+	if (cell)  *cell = value;
+	if (path)  *path = found;
+	return true;
 }
 
 //------------------------------------------------------------------------

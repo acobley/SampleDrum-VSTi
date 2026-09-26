@@ -53,6 +53,14 @@ static const char* const kSampleDrumCellMessage       = "SampleDrumCell";
 static const char* const kSampleDrumCellIndexAttribute = "Cell";
 static const char* const kSampleDrumCellPathAttribute  = "Path";
 
+/** OPTIONAL, on the message above: the cell this file came from, when a
+    cell was dragged onto another rather than a file dropped from the
+    Finder. It is what lets the file's EMBEDDED copy travel with it - on a
+    machine that only has the project, the embedded copy is the only copy
+    there is. Absent for a drop from outside, which reads the disk afresh.
+    As Project6's kProject6SlotFromAttribute. */
+static const char* const kSampleDrumCellFromAttribute  = "From";
+
 /** Processor -> controller: how a cell's file actually read, as a
     SampleStatus.
 

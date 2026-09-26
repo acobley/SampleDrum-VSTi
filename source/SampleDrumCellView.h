@@ -4,7 +4,16 @@
 // Drag a .wav onto it from the Finder and it takes the file - the same
 // drop handling as Project6's SpySampleSlot, cut down to what a cell here
 // does. Click a loaded cell and it plays (an audition, at the start of
-// the next block). Option-click it and it empties.
+// the next block). DRAG IT ONTO ANOTHER CELL to move it there - a swap -
+// or hold Option or Control at the drop to copy it. RIGHT-CLICK (or
+// Control-click) for "Clear cell"; Option-click also empties it.
+//
+// THE AUDITION STAYS ON THE PRESS, unlike Project6, which moved its pad
+// launch to the release when pads became draggable: a launched LOOP that
+// was only being picked up would keep running. A one-shot heard as a cell
+// is picked up is harmless - arguably useful - and a drum that sounds on
+// release feels late. OPTION-CLICK EMPTIES ON RELEASE, not on press, so
+// that pressing Option and dragging is a COPY, not a cell emptied.
 //
 // IT IS NOT A PARAMETER, and deliberately not a CControl: a file path is
 // not a number no host can automate, so it travels to the processor as a
@@ -30,6 +39,7 @@
 #include "vstgui/vstgui.h"
 #include "vstgui/lib/dragging.h"
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -67,8 +77,28 @@ public:
 	/** (cell) when a loaded cell is clicked. */
 	void setAuditionHandler (std::function<void (int)> handler);
 
+	/** (from, to, copy) when a cell of THIS INSTANCE is dropped here. */
+	void setMoveHandler (std::function<void (int, int, bool)> handler);
+
+	/** (cell) when this cell is to be EMPTIED - from the right-click
+	    menu or an Option-click. Like a drop, the cell does not empty
+	    itself: the change goes through the controller and comes back. */
+	void setClearHandler (std::function<void (int)> handler);
+
+	/** This instance's id, stamped on every drag that starts here and
+	    compared on every drop - see encodeCellDrag. */
+	void setOwner (std::uint64_t owner) { mOwner = owner; }
+
 	void draw (VSTGUI::CDrawContext* context) override;
+
+	/** How far the pointer may travel before a press becomes a drag:
+	    Project6's four pixels. */
+	static constexpr VSTGUI::CCoord kDragThreshold = 4.;
+
 	void onMouseDownEvent (VSTGUI::MouseDownEvent& event) override;
+	void onMouseMoveEvent (VSTGUI::MouseMoveEvent& event) override;
+	void onMouseUpEvent (VSTGUI::MouseUpEvent& event) override;
+	void onMouseCancelEvent (VSTGUI::MouseCancelEvent& event) override;
 
 	// Drag and drop. Returning `this` as the target is the SDK's own
 	// pattern for a view that is its own target (CTabButton, ColorView),
@@ -86,6 +116,22 @@ private:
 	    drag of five files onto one cell is a drop on ONE cell. */
 	static std::string firstWavPath (VSTGUI::IDataPackage* package);
 
+	/** Is this drag a cell rather than a file? Fills the rest if so. */
+	static bool cellDrag (VSTGUI::IDataPackage* package, std::uint64_t& owner, int& from,
+	                      std::string& path);
+
+	/** Held at the drop, it copies instead of moving. Control as well as
+	    Option: macOS turns a Control-CLICK into a right-click, but a
+	    Control held during a drag arrives as Control. Project6's rule. */
+	static bool copyRequested (const VSTGUI::Modifiers& modifiers);
+
+	/** The right-click menu: one entry, "Clear cell (name)" - the name on
+	    it so what is about to go is in front of the person choosing. */
+	void showCellMenu (const VSTGUI::CPoint& where);
+
+	/** Put this cell on the pasteboard, once a press has become a drag. */
+	void beginCellDrag ();
+
 	void refreshTooltip ();
 
 	int mCell = 0;
@@ -94,9 +140,23 @@ private:
 	SampleStatus mStatus = SampleStatus::Empty;
 	float mLamp = 0.f;
 	bool mDragOver = false;
+	/** The operation the current drag-over will be: a file from outside
+	    and a cell from another instance are always Copy. */
+	bool mDragIsOwnCell = false;
+
+	/** A press that has not yet decided whether it is a click or a drag. */
+	bool mPressed = false;
+	bool mDragStarted = false;
+	/** Option was down at the press: a release without a drag empties. */
+	bool mClearOnRelease = false;
+	VSTGUI::CPoint mPressPoint;
+
+	std::uint64_t mOwner = 0;
 
 	std::function<void (int, const std::string&)> mPathHandler;
 	std::function<void (int)> mAuditionHandler;
+	std::function<void (int, int, bool)> mMoveHandler;
+	std::function<void (int)> mClearHandler;
 };
 
 //------------------------------------------------------------------------
