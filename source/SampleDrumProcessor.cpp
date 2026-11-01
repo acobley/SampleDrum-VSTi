@@ -3,6 +3,7 @@
 //------------------------------------------------------------------------
 
 #include "SampleDrumProcessor.h"
+#include "DenormalGuard.h"
 #include "SampleDrumIDs.h"
 #include "SampleDrumState.h"
 
@@ -260,6 +261,10 @@ void SampleDrumProcessor::writeOutput (ProcessData& data, int32 numSamples)
 //------------------------------------------------------------------------
 tresult PLUGIN_API SampleDrumProcessor::process (ProcessData& data)
 {
+	// Flush-to-zero for this call only; the host's FPU mode comes back on
+	// return. See DenormalGuard.h.
+	ScopedFlushDenormals noDenormals;
+
 	// THE BLOCK COUNTER, first thing, every call - see mBlockCounter.
 	mBlockCounter.fetch_add (1, std::memory_order_acq_rel);
 

@@ -10,6 +10,7 @@
 #include "SampleDrumDsp.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace SampleDrum {
 
@@ -92,7 +93,42 @@ void SampleDrumDsp::setSampleRate (double sampleRate)
 	mFadeSamples = std::max (1, static_cast<int> (kChokeFadeSeconds * mSampleRate + 0.5));
 	mCellLevelCoeff = 1.0 - std::exp (-1.0 / (kCellLevelSmoothingSeconds * mSampleRate));
 
+	// The band-limited read's banks: sized here, off the audio thread, and
+	// the steps of the usual high-rate files built in advance.
+	for (SincBank& bank : mBanks)
+	{
+		bank.weights.assign (static_cast<std::size_t> (SincBank::kPhases + 1) * SincBank::kMaxTaps, 0.f);
+		bank.ratio = 0.0;
+	}
+	int slot = 0;
+	for (double fileRate : { 88200.0, 96000.0, 176400.0, 192000.0 })
+		if (fileRate / mSampleRate > 1.0 + 1e-9 && slot < kBankSlots)
+			mBanks[slot++].build (fileRate / mSampleRate);
+
 	reset ();
+}
+
+//------------------------------------------------------------------------
+int SampleDrumDsp::bankFor (double step)
+{
+	for (int i = 0; i < kBankSlots; ++i)
+		if (mBanks[i].ratio == step)
+			return i;
+
+	// A rate nobody built for. Take a slot no playing voice is using -
+	// rebuilding one under a voice would change its filter mid-hit.
+	for (int i = 0; i < kBankSlots; ++i)
+	{
+		bool inUse = false;
+		for (const Voice& voice : mVoices)
+			inUse = inUse || (voice.active () && voice.bank == i);
+		if (!inUse && !mBanks[i].weights.empty ())
+		{
+			mBanks[i].build (step);
+			return i;
+		}
+	}
+	return -1;   // eight different high rates at once: the linear read
 }
 
 //------------------------------------------------------------------------
@@ -397,6 +433,7 @@ void SampleDrumDsp::startVoice (int cell, int column)
 	voice.cell     = cell;
 	voice.position = 0.0;
 	voice.step     = sample->sourceRate / mSampleRate;
+	voice.bank     = (voice.step > 1.0 + 1e-9) ? bankFor (voice.step) : -1;
 	voice.age      = mNextAge++;
 	*slot = voice;
 
@@ -434,22 +471,35 @@ void SampleDrumDsp::renderVoices (float* left, float* right, int from, int to)
 				break;
 			}
 
-			// LINEAR INTERPOLATION between this frame and the next, the
-			// last frame leaning towards silence. At a step of exactly 1
-			// the fraction is exactly 0 and the output is the file's own
-			// samples, bit for bit - the tests hold it to that.
-			const float frac = static_cast<float> (voice.position - frame);
-			const float* a = data + static_cast<std::size_t> (frame) * kSampleChannels;
-			const bool   last = (frame + 1 >= frames);
-			const float  nextL = last ? 0.f : a[kSampleChannels];
-			const float  nextR = last ? 0.f : a[kSampleChannels + 1];
-
 			// At a settled level gainStep is exactly 0 and the gain is the
 			// target itself - 1.0 at 0 dB, so unity stays bit-identical.
 			const float gain = gainStart + gainStep * static_cast<float> (i + 1);
 
-			float l = (a[0] + (nextL - a[0]) * frac) * gain;
-			float r = (a[1] + (nextR - a[1]) * frac) * gain;
+			float l, r;
+			if (voice.bank >= 0)
+			{
+				// A FILE ABOVE THE SESSION'S RATE: band-limited, so what
+				// cannot exist at the session's rate is removed rather than
+				// folded back. See SincBank.
+				mBanks[voice.bank].read (data, frames, voice.position, l, r);
+				l *= gain;
+				r *= gain;
+			}
+			else
+			{
+				// LINEAR INTERPOLATION between this frame and the next, the
+				// last frame leaning towards silence. At a step of exactly
+				// 1 the fraction is exactly 0 and the output is the file's
+				// own samples, bit for bit - the tests hold it to that.
+				const float frac = static_cast<float> (voice.position - frame);
+				const float* a = data + static_cast<std::size_t> (frame) * kSampleChannels;
+				const bool   last = (frame + 1 >= frames);
+				const float  nextL = last ? 0.f : a[kSampleChannels];
+				const float  nextR = last ? 0.f : a[kSampleChannels + 1];
+
+				l = (a[0] + (nextL - a[0]) * frac) * gain;
+				r = (a[1] + (nextR - a[1]) * frac) * gain;
+			}
 
 			if (voice.fadeLeft > 0)
 			{
@@ -561,4 +611,116 @@ int SampleDrumDsp::activeVoices () const
 }
 
 //------------------------------------------------------------------------
+//------------------------------------------------------------------------
+// SincBank
+//------------------------------------------------------------------------
+namespace {
+/** sinc (u) x kaiser (u / kZeroCrossings) for u = 0 .. kZeroCrossings,
+    512 points per zero crossing, built once. */
+struct SincTable
+{
+	static constexpr int kResolution = 512;
+	float v[SincBank::kZeroCrossings * kResolution + 2];
+
+	SincTable ()
+	{
+		const double pi = 3.14159265358979323846;
+		auto besselI0 = [] (double x)
+		{
+			double sum = 1.0, term = 1.0;
+			for (int k = 1; k < 40; ++k)
+			{
+				term *= (x / (2.0 * k)) * (x / (2.0 * k));
+				sum += term;
+			}
+			return sum;
+		};
+		const double norm = besselI0 (SincBank::kBeta);
+		const int n = SincBank::kZeroCrossings * kResolution;
+		for (int i = 0; i <= n; ++i)
+		{
+			const double u = static_cast<double> (i) / kResolution;
+			const double x = u / SincBank::kZeroCrossings;
+			const double window = besselI0 (SincBank::kBeta * std::sqrt (std::max (0.0, 1.0 - x * x))) / norm;
+			v[i] = static_cast<float> (((i == 0) ? 1.0 : std::sin (pi * u) / (pi * u)) * window);
+		}
+		v[n + 1] = 0.f;
+	}
+};
+
+const SincTable& sincTable ()
+{
+	static const SincTable table;   // first touched by setSampleRate, off the audio thread
+	return table;
+}
+} // namespace
+
+void SincBank::build (double r)
+{
+	if (weights.empty ())
+		return;                          // never sized: the caller falls back to linear
+	const float* table = sincTable ().v;
+	const double fc    = kCutoff / r;
+	const double half  = std::min (kZeroCrossings / fc, static_cast<double> (kMaxHalfWidth));
+	const double edge  = static_cast<double> (kZeroCrossings * SincTable::kResolution);
+
+	ratio = r;
+	lead  = static_cast<int> (std::ceil (half));
+	taps  = std::min (2 * lead + 1, kMaxTaps);
+
+	for (int p = 0; p <= kPhases; ++p)
+	{
+		float* row = weights.data () + static_cast<std::size_t> (p) * kMaxTaps;
+		const double frac = static_cast<double> (p) / kPhases;
+		double sum = 0.0;
+		for (int j = 0; j < taps; ++j)
+		{
+			const double t = static_cast<double> (j - lead) - frac;
+			double w = 0.0;
+			if (std::fabs (t) <= half)
+			{
+				const double ax = std::fabs (t * fc) * SincTable::kResolution;
+				if (ax < edge)
+				{
+					const int i = static_cast<int> (ax);
+					w = table[i] + (table[i + 1] - table[i]) * (ax - static_cast<double> (i));
+				}
+			}
+			row[j] = static_cast<float> (w);
+			sum += w;
+		}
+		const float norm = (sum > 0.0) ? static_cast<float> (1.0 / sum) : 0.f;
+		for (int j = 0; j < taps; ++j)
+			row[j] *= norm;
+	}
+}
+
+void SincBank::read (const float* data, int frames, double position, float& left, float& right) const
+{
+	const int whole = static_cast<int> (position);
+	const double phase = (position - static_cast<double> (whole)) * kPhases;
+	int p = static_cast<int> (phase);
+	if (p >= kPhases)
+		p = kPhases - 1;
+	const float f = static_cast<float> (phase - static_cast<double> (p));
+
+	const float* row0 = weights.data () + static_cast<std::size_t> (p) * kMaxTaps;
+	const float* row1 = row0 + kMaxTaps;
+	const int first = whole - lead;
+
+	// Only the taps inside the file: beyond either end is silence.
+	const int j0 = std::max (0, -first);
+	const int j1 = std::min (taps, frames - first);
+	const float* src = data + static_cast<std::ptrdiff_t> (first) * kSampleChannels;
+	float l = 0.f, r = 0.f;
+	for (int j = j0; j < j1; ++j)
+	{
+		const float w = row0[j] + (row1[j] - row0[j]) * f;
+		l += w * src[2 * j];
+		r += w * src[2 * j + 1];
+	}
+	left  = l;
+	right = r;
+}
+
 } // namespace SampleDrum

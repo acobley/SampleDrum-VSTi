@@ -546,3 +546,56 @@ compile clean on the Mac.
 4. `installer/publish-release.sh --dry-run`, then without `--dry-run`.
 5. The package is under **Releases**, not in the file listing.
 
+
+## 13. A sample above the session's rate: band-limited, not aliased (2026-11-01)
+
+From the DXi-DEv audit (`AUDIT-denormals-aliasing.md`). A voice reads its file
+at `step = sourceRate / session rate`, interpolating linearly. That is fine at a
+step of 1 or below, and does nothing against aliasing above it. A 96 kHz file
+in a 48 kHz session (step 2) folded everything in the recording between 24 and
+48 kHz straight down at full level: a 30 kHz component came out at 18 kHz at
+**0 dB**, because at a step of exactly 2 linear interpolation is plain
+decimation. Cymbal and hat recordings made at 96 kHz do have energy there.
+
+**Above a step of 1, a voice now reads through `SincBank`**
+(`SampleDrumDsp.h`): a Kaiser-windowed sinc at 0.94 × the session's Nyquist,
+10 zero-crossings either side, β = 9, from a polyphase bank (128 phases, two
+rows interpolated, each row normalised to unity DC gain). This is the same
+design as Project6's tempo-fit read, with a longer kernel. A file's rate is
+fixed, so the bank is built once, and the extra taps buy a sharper transition.
+
+* **Banks.** `setSampleRate` sizes eight bank slots, off the audio thread, and
+  builds the steps for 88.2, 96, 176.4 and 192 kHz files in advance. Any other
+  rate gets a bank when its first voice starts, in a slot no playing voice is
+  using (about 8 k table lookups, once). With eight different high rates
+  sounding at once, a voice falls back to the linear read.
+* **Taps past either end of the file read as silence.** A drum hit is a
+  one-shot.
+* **At or below a step of 1 nothing changes.** Three renders, at steps 0.92,
+  1.0 and 0.67, are byte-identical to the build before.
+
+Measured, a 96 kHz file at 48 kHz:
+
+* what would fold to 18 kHz comes out at −98 dB (0 dB before);
+* to 16 kHz, −93 dB;
+* 19 kHz passes at −0.4 dB, 20 kHz at −1.1.
+
+The cost is in the taps: about 43 at a step of 2, capped at 65. With 28 voices
+of 96 kHz files at 48 kHz on the arm64 Linux VM, CPU went from 1.7 to 32 ms per
+second of audio. A few high-rate hits at once cost a fraction of that.
+
+The resampling test's "does not overshoot a constant" now applies only to steps
+of 1 or below. A constant that starts and stops dead is a step, and a
+band-limited step rings by about 9 % at its ends (Gibbs). For a file above the
+host's rate the test instead checks that the level in between is exact (unity
+DC gain) and that the ringing is no more than Gibbs.
+
+`DspTests` "a file above the host's rate is band-limited" checks:
+
+* 30 kHz in a 96 kHz file at 48 kHz does not fold to 18 kHz (−98 dB; the linear
+  read, as the negative control, gives −0.0);
+* 10 kHz passes within 0.5 dB;
+* a 64 kHz file, a rate built on demand, behaves the same;
+* `ScopedFlushDenormals` (`source/DenormalGuard.h`, ForTran's copy with the
+  compiler barriers) now wraps `SampleDrumProcessor::process`. Adding it adds a
+  file to `source/`, so re-run `./setup-xcode.sh` before the next Xcode build.

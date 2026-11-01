@@ -18,6 +18,7 @@
 //------------------------------------------------------------------------
 
 #include "SampleDrumDsp.h"
+#include "DenormalGuard.h"
 #include "SampleDrumKit.h"
 #include "SampleDrumSample.h"
 
@@ -652,7 +653,21 @@ static void testResampling ()
 		const double seconds = (last + 1) / c.host;
 		checkClose (seconds, frames / c.file, 2.0 / c.host,
 		            "a " + str (static_cast<int> (c.file)) + " file lasts as long at " + str (static_cast<int> (c.host)));
-		check (peakOf (l) <= 0.5f + 1e-6f, "resampling does not overshoot a constant");
+		if (c.file <= c.host)
+			check (peakOf (l) <= 0.5f + 1e-6f, "resampling does not overshoot a constant");
+		else
+		{
+			// A FILE ABOVE THE HOST'S RATE is read band-limited (SincBank),
+			// and a constant that starts and stops dead is a step: a
+			// band-limited step rings, ~9 % (Gibbs), at its two ends. That
+			// is the correct picture of the file at the lower rate, not an
+			// error. What must hold is the level in between - unity DC
+			// gain - and that the ringing is no more than Gibbs.
+			const float mid = l[static_cast<std::size_t> (total / 3)];
+			checkClose (mid, 0.5, 1e-4, "a " + str (static_cast<int> (c.file)) +
+			            " file at " + str (static_cast<int> (c.host)) + ": a constant keeps its level (unity DC gain)");
+			check (peakOf (l) <= 0.5f * 1.10f, "and its ends ring no more than a band-limited step (Gibbs, ~9 %)");
+		}
 	}
 }
 
@@ -1303,6 +1318,93 @@ static void testCellDrag ()
 }
 
 //------------------------------------------------------------------------
+//------------------------------------------------------------------------
+// 10b. A file above the host's rate is band-limited, not aliased
+//------------------------------------------------------------------------
+namespace {
+/** Level of `hz` in `x` (from `from`, `n` samples), Blackman-windowed, dB
+    re a full-scale sine. */
+double toneDb (const std::vector<float>& x, int from, int n, double hz, double fs)
+{
+	const double pi = 3.14159265358979323846;
+	double re = 0.0, im = 0.0, wsum = 0.0;
+	for (int i = 0; i < n; ++i)
+	{
+		const double w = 0.42 - 0.5 * std::cos (2.0 * pi * i / (n - 1)) + 0.08 * std::cos (4.0 * pi * i / (n - 1));
+		const double v = x[static_cast<std::size_t> (from + i)];
+		re += w * v * std::cos (2.0 * pi * hz * i / fs);
+		im -= w * v * std::sin (2.0 * pi * hz * i / fs);
+		wsum += w;
+	}
+	return 20.0 * std::log10 (std::sqrt (re * re + im * im) / (wsum / 2.0) + 1e-30);
+}
+
+std::shared_ptr<SampleBuffer> sineSample (double hz, double rate, int frames)
+{
+	auto s = makeSample (frames, 0.f, rate);
+	for (int i = 0; i < frames; ++i)
+		s->samples[static_cast<std::size_t> (i) * 2] = s->samples[static_cast<std::size_t> (i) * 2 + 1]
+		    = static_cast<float> (std::sin (2.0 * 3.14159265358979323846 * hz * i / rate));
+	s->peak = 1.f;
+	return s;
+}
+
+std::vector<float> playAt (const std::shared_ptr<SampleBuffer>& s, double host, int total)
+{
+	SampleDrumDsp dsp;
+	dsp.setSampleRate (host);
+	dsp.setCellSample (0, s.get ());
+	dsp.noteOn (36, 1.f, 0);
+	std::vector<float> l, r;
+	renderInto (dsp, l, r, total, 512);
+	return l;
+}
+} // namespace
+
+static void testBandLimited ()
+{
+	std::printf ("a file above the host's rate is band-limited\n");
+
+	// 30 kHz in a 96 kHz file cannot exist at 48 kHz; read linearly at a
+	// step of 2 it came out folded to 18 kHz at 0 dB.
+	const auto high = sineSample (30000.0, 96000.0, 96000);
+	const auto out = playAt (high, 48000.0, 40000);
+	const double folded = toneDb (out, 4000, 32768, 18000.0, 48000.0);
+
+	// NEGATIVE CONTROL: the linear read, as the voice used to do it.
+	std::vector<float> linear (40000);
+	for (int i = 0; i < 40000; ++i)
+		linear[static_cast<std::size_t> (i)] = high->samples[static_cast<std::size_t> (2 * i) * 2];
+	const double foldedLinear = toneDb (linear, 4000, 32768, 18000.0, 48000.0);
+	std::printf ("    30 kHz in a 96 k file, at 48 k: folded to 18 kHz %.1f dB (linear read %.1f dB)\n",
+	             folded, foldedLinear);
+	check (folded < -65.0, "96 k file at 48 k: 30 kHz does not fold back to 18 kHz");
+	check (foldedLinear > -3.0, "NEGATIVE CONTROL: the linear read folds it at nearly full level");
+
+	// What fits, passes: 10 kHz in a 96 k file is 10 kHz at 48 k.
+	const double pass = toneDb (playAt (sineSample (10000.0, 96000.0, 96000), 48000.0, 40000), 4000, 32768, 10000.0, 48000.0);
+	std::printf ("    10 kHz in a 96 k file, at 48 k: %.2f dB\n", pass);
+	check (std::fabs (pass) < 0.5, "96 k file at 48 k: 10 kHz passes within 0.5 dB");
+
+	// A rate nobody built a bank for in advance gets one when it plays.
+	const double odd = toneDb (playAt (sineSample (30000.0, 64000.0, 64000), 48000.0, 40000), 4000, 32768, 18000.0, 48000.0);
+	std::printf ("    30 kHz in a 64 k file, at 48 k: folded to 18 kHz %.1f dB\n", odd);
+	check (odd < -65.0, "64 k file at 48 k (an unusual rate): 30 kHz does not fold back");
+
+	// The guard process() runs under. Every value through memory: the
+	// guard orders memory accesses round its mode switch.
+	if (ScopedFlushDenormals::supported ())
+	{
+		volatile float tiny = 1.0e-37f, half = 0.01f;
+		volatile float before = tiny * half;
+		volatile float inside = 1.f;
+		{ ScopedFlushDenormals guard; inside = tiny * half; }
+		volatile float after = tiny * half;
+		check (before != 0.f && inside == 0.f && after == before,
+		       "ScopedFlushDenormals: flush-to-zero inside, the host's mode restored after");
+	}
+}
+
 int main ()
 {
 	std::printf ("SampleDrum DSP tests\n");
@@ -1320,6 +1422,7 @@ int main ()
 	testUnityIsBitIdentical ();
 	testPlayback ();
 	testResampling ();
+	testBandLimited ();
 	testChoke ();
 	testReplacement ();
 	testVoiceLimit ();

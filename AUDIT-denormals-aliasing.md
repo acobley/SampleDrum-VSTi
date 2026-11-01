@@ -24,7 +24,7 @@ needs only that file.
 | **FilterDrum** | Handled | **Problem.** Self-oscillation above ~4 kHz: alias tones at −26 / −29 dB right beside a 6 kHz pitch (measured) | **4: fix** |
 | **ForTran** | Minor: output gain smoother at 0 | **Problem.** Partials above Nyquist are not culled; notes from about D♯7 up alias | **5: fix** |
 | **VocalFilter** | Minor: Mix and Trim smoothers stick when aimed at 0 | None (linear) | 6: tidy |
-| **SampleDrum** | Handled | Minor: linear interpolation when a file's rate is above the session's | 7: tidy |
+| **SampleDrum** | Handled | **Fixed 1 Nov.** Was: linear interpolation when a file's rate is above the session's | done |
 | **SpyBand** | Handled | None that matters | none |
 
 Every one of the eight lacks a flush-to-zero guard around `process()`. Add it
@@ -207,6 +207,8 @@ attenuated. Two ways to fix it:
 ## C. This project's findings
 
 ### SampleDrum: aliasing, priority 7 (tidy); denormals handled
+
+> **Status: fixed 1 Nov 2026** on SampleDrum branch `bandlimited-src` (see its `PORTING-NOTES.md` §13). This is not load-time resampling as suggested below: above a step of 1 a voice reads through a band-limited sinc bank, the same design as Project6's but longer. For a 96 kHz file at 48 kHz, 30 kHz → 18 kHz went from 0 dB to −98 dB. Steps of 1 or below are byte-identical to before.
 
 **Denormals: handled.** `Smoother::next` flushes at 1e-25
 (`SampleDrumDsp.cpp:46–51`). Voices end at the end of the file or the end of

@@ -164,6 +164,50 @@ private:
 };
 
 //------------------------------------------------------------------------
+/** THE BAND-LIMITED READ, for a sample whose rate is ABOVE the session's.
+
+    A voice reads its file at step = sourceRate / session rate, and linear
+    interpolation does nothing against aliasing when that is above 1: a
+    96 kHz file in a 48 kHz session folded everything between 24 and
+    48 kHz in the recording straight down at nearly full level - a 30 kHz
+    component came out at 18 kHz at 0 dB (AUDIT-denormals-aliasing.md).
+
+    So above a step of 1 a voice reads through a Kaiser-windowed sinc
+    whose cutoff is kSincCutoff x the SESSION's Nyquist, from a polyphase
+    bank: kSincPhases + 1 rows of `taps` weights, row p the kernel at a
+    read position p / kSincPhases past an integer frame, each row
+    normalised to unity DC gain. The same design as Project6's tempo-fit
+    read, with a longer kernel (10 zero-crossings, beta 9, against 6 and
+    7): a file's rate is fixed, so the bank is built once, and the extra
+    taps buy the transition band. Measured, 96 kHz file at 48 kHz: what
+    would fold to 18 kHz is at -98 dB, to 16 kHz -93; 19 kHz passes at
+    -0.4 dB, 20 kHz -1.1. At a step of 1 or below nothing changes: the
+    linear read stays, and a file at the session's rate is still
+    bit-identical to itself. */
+struct SincBank
+{
+	static constexpr int    kZeroCrossings = 10;     ///< either side, at the cutoff
+	static constexpr double kCutoff        = 0.94;   ///< of the session's Nyquist
+	static constexpr double kBeta          = 9.0;    ///< Kaiser
+	static constexpr int    kPhases        = 128;
+	static constexpr int    kMaxHalfWidth  = 32;     ///< source frames either side, at most
+	static constexpr int    kMaxTaps       = 2 * kMaxHalfWidth + 2;
+
+	std::vector<float> weights;   ///< (kPhases + 1) x kMaxTaps, sized off the audio thread
+	double ratio = 0.0;           ///< the step this bank was built for; 0 = empty
+	int    taps  = 0;
+	int    lead  = 0;             ///< taps before the integer read position
+
+	/** Fill the bank for `ratio` (> 1). Allocation-free once weights is
+	    sized; about 8 k table lookups. */
+	void build (double ratio);
+
+	/** One stereo frame of interleaved `data` at `position`. Taps past
+	    either end of the file read as silence: a drum hit is a one-shot. */
+	void read (const float* data, int frames, double position, float& left, float& right) const;
+};
+
+//------------------------------------------------------------------------
 class SampleDrumDsp
 {
 public:
@@ -283,6 +327,7 @@ private:
 		int    cell     = -1;
 		double position = 0.0;                  // in source frames
 		double step     = 1.0;                  // source frames per output sample
+		int    bank     = -1;                   // mBanks slot when step > 1, else -1
 		std::uint64_t age = 0;                  // start order, for stealing
 
 		// Early stop: when fadeLeft > 0 the voice ramps to silence over
@@ -337,6 +382,14 @@ private:
 	std::atomic<const SampleBuffer*> mCells[kCellCount];
 
 	Voice mVoices[kMaxVoices + kSpareVoices];
+
+	/** The band-limited read's banks, one per distinct step above 1. The
+	    usual ones (88.2, 96, 176.4 and 192 kHz files) are built by
+	    setSampleRate, off the audio thread; any other rate is built when
+	    its first voice starts, into a slot no playing voice is using. */
+	static constexpr int kBankSlots = 8;
+	SincBank mBanks[kBankSlots];
+	int bankFor (double step);
 	std::uint64_t mNextAge = 0;
 
 	PendingHit mPending[kMaxEventsPerBlock];
