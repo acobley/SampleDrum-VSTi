@@ -64,7 +64,7 @@ endif()
 # loses it.
 #-----------------------------------------------------------------------------
 set(PLUGIN_NAME         "SampleDrum")
-set(PLUGIN_VERSION      "1.0.0.0")   # keep in step with source/version.h
+set(PLUGIN_VERSION      "1.0.1.0")   # keep in step with source/version.h
 set(PLUGIN_DESCRIPTION  "SampleDrum - sample-based drum instrument")
 set(PLUGIN_COMPANY      "AE Cobley")   # no full stops; the same as the AU name's maker - see au-info.plist
 set(PLUGIN_BUNDLE_ID    "audio.sampledrum.vst3")
