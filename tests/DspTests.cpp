@@ -1405,6 +1405,401 @@ static void testBandLimited ()
 	}
 }
 
+//------------------------------------------------------------------------
+// THE OUTPUT ISOLATOR
+//------------------------------------------------------------------------
+
+/** A sine's level through `iso`, in dB relative to the input: Hann-windowed
+    I/Q demodulation of input and output over at least ten cycles, after
+    the filters have settled - accurate to well under 0.01 dB, and
+    independent of the phase shift. */
+double isolatorGainDb (Isolator& iso, double hz, double rate)
+{
+	const int settle = static_cast<int> (0.3 * rate);
+	const int window = static_cast<int> (std::max (0.2 * rate, 10.0 * rate / hz));
+	const int total = settle + window;
+
+	std::vector<float> left (static_cast<size_t> (total)), right;
+	for (int i = 0; i < total; ++i)
+		left[i] = static_cast<float> (0.25 * std::sin (2.0 * M_PI * hz * i / rate));
+	const std::vector<float> input = left;
+	right = left;
+
+	for (int at = 0; at < total; at += 512)
+	{
+		const int n = std::min (512, total - at);
+		iso.process (left.data () + at, right.data () + at, n);
+	}
+
+	auto level = [&] (const std::vector<float>& y)
+	{
+		double si = 0.0, co = 0.0;
+		for (int i = 0; i < window; ++i)
+		{
+			const int k = settle + i;
+			const double w = 0.5 - 0.5 * std::cos (2.0 * M_PI * i / (window - 1));
+			const double ph = 2.0 * M_PI * hz * k / rate;
+			si += w * y[k] * std::sin (ph);
+			co += w * y[k] * std::cos (ph);
+		}
+		return std::sqrt (si * si + co * co);
+	};
+
+	const double in = level (input), out = level (left);
+	return (out <= 0.0) ? -300.0 : 20.0 * std::log10 (out / in);
+}
+
+/** A fresh isolator at `rate`, settled at the given settings. */
+void setIsolator (Isolator& iso, double rate, double bassDb, double trebleDb,
+                  double bassHz = kBassHzDefault, double trebleHz = kTrebleHzDefault)
+{
+	iso.setBassDb (bassDb);
+	iso.setTrebleDb (trebleDb);
+	iso.setBassHz (bassHz);
+	iso.setTrebleHz (trebleHz);
+	iso.setSampleRate (rate);   // snaps
+}
+
+static void testIsolator ()
+{
+	std::printf ("output isolator\n");
+
+	// ---- the shared laws ---------------------------------------------
+	check (isolatorGain (kIsolatorMinDb) == 0.0, "isolator: the bottom of the range is a kill (exactly 0)");
+	check (isolatorGain (-1000.0) == 0.0, "isolator: below the range is a kill");
+	check (isolatorGain (0.0) == 1.0, "isolator: 0 dB is exactly 1");
+	check (isolatorGain (7e-15) == 1.0 && isolatorGain (-3e-6) == 1.0,
+	       "isolator: a 0 dB default that came through a normalised value is still exactly 1");
+	check (isolatorGain (0.01) != 1.0, "isolator: 0.01 dB is not snapped to unity");
+	checkClose (isolatorGain (6.0), std::pow (10.0, 6.0 / 20.0), 1e-12, "isolator: +6 dB");
+	checkClose (isolatorGain (60.0), std::pow (10.0, 6.0 / 20.0), 1e-12, "isolator: clamped at +6 dB");
+	checkClose (isolatorGain (-39.9), std::pow (10.0, -39.9 / 20.0), 1e-12, "isolator: just above the kill is -39.9 dB");
+
+	checkClose (logRangeToPlain (0.0, kBassHzMin, kBassHzMax), kBassHzMin, 1e-9, "log range: 0 -> min");
+	checkClose (logRangeToPlain (1.0, kBassHzMin, kBassHzMax), kBassHzMax, 1e-9, "log range: 1 -> max");
+	checkClose (logRangeToPlain (0.5, kTrebleHzMin, kTrebleHzMax),
+	            std::sqrt (kTrebleHzMin * kTrebleHzMax), 1e-9, "log range: the middle is the geometric middle");
+	checkClose (logRangeToPlain (-1.0, kBassHzMin, kBassHzMax), kBassHzMin, 1e-9, "log range: clamped below");
+	checkClose (logRangeToNormalized (1e9, kBassHzMin, kBassHzMax), 1.0, 1e-12, "log range: clamped above");
+	{
+		double worst = 0.0;
+		for (int i = 0; i <= 1000; ++i)
+		{
+			const double n = i / 1000.0;
+			worst = std::max (worst, std::fabs (logRangeToNormalized (
+				logRangeToPlain (n, kTrebleHzMin, kTrebleHzMax), kTrebleHzMin, kTrebleHzMax) - n));
+		}
+		checkClose (worst, 0.0, 1e-12, "log range: round trip");
+	}
+	check (kBassHzMax < kTrebleHzMin, "isolator: the two frequency ranges do not overlap");
+
+	const double freqs[] = { 20, 50, 100, 200, 350, 500, 1000, 1500, 2000, 3500, 5000, 8000, 12000, 16000, 20000 };
+
+	for (double rate : kRates)
+	{
+		const std::string r = " @" + str (static_cast<int> (rate));
+
+		// ---- 0 dB / 0 dB: the input, bit for bit ---------------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, 0.0, 0.0);
+			std::vector<float> left (4096), right (4096);
+			std::uint32_t seed = 12345u;
+			for (size_t i = 0; i < left.size (); ++i)
+			{
+				seed = seed * 1664525u + 1013904223u;
+				left[i] = static_cast<float> (static_cast<int> (seed >> 8) % 20001 - 10000) / 10000.f;
+				right[i] = -left[i] * 0.5f;
+			}
+			const std::vector<float> l0 = left, r0 = right;
+			for (size_t at = 0; at < left.size (); at += 256)
+				iso.process (left.data () + at, right.data () + at, 256);
+			check (std::memcmp (l0.data (), left.data (), left.size () * sizeof (float)) == 0
+			       && std::memcmp (r0.data (), right.data (), right.size () * sizeof (float)) == 0,
+			       "isolator: 0 dB / 0 dB is bit-identical" + r);
+			check (iso.mix () == 0.0, "isolator: 0 dB / 0 dB is dry" + r);
+		}
+
+		// ---- the band sum itself is flat, at the default and both ends
+		{
+			const double pairs[][2] = { { kBassHzDefault, kTrebleHzDefault },
+			                            { kBassHzMin, kTrebleHzMin },
+			                            { kBassHzMax, kTrebleHzMax } };
+			for (const auto& pair : pairs)
+			{
+				double worst = 0.0;
+				for (double hz : freqs)
+				{
+					if (hz > 0.45 * rate)
+						continue;
+					Isolator iso;
+					setIsolator (iso, rate, 0.0, 0.0, pair[0], pair[1]);
+					iso.forceFilteredForTest (true);
+					worst = std::max (worst, std::fabs (isolatorGainDb (iso, hz, rate)));
+				}
+				checkClose (worst, 0.0, 0.01, "isolator: filtered path flat within 0.01 dB, "
+				            + str (static_cast<int> (pair[0])) + "/" + str (static_cast<int> (pair[1])) + " Hz" + r);
+			}
+		}
+
+		// ---- kills ---------------------------------------------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, kIsolatorMinDb, 0.0);
+			const double low = isolatorGainDb (iso, 50.0, rate);
+			setIsolator (iso, rate, kIsolatorMinDb, 0.0);
+			const double mid = isolatorGainDb (iso, 1000.0, rate);
+			check (low < -40.0, "isolator: bass kill takes 50 Hz down > 40 dB (" + std::to_string (low) + ")" + r);
+			checkClose (mid, 0.0, 0.1, "isolator: bass kill leaves 1 kHz" + r);
+		}
+		{
+			Isolator iso;
+			setIsolator (iso, rate, 0.0, kIsolatorMinDb);
+			const double high = isolatorGainDb (iso, 14000.0, rate);
+			setIsolator (iso, rate, 0.0, kIsolatorMinDb);
+			const double mid = isolatorGainDb (iso, 1000.0, rate);
+			check (high < -40.0, "isolator: treble kill takes 14 kHz down > 40 dB (" + std::to_string (high) + ")" + r);
+			checkClose (mid, 0.0, 0.1, "isolator: treble kill leaves 1 kHz" + r);
+		}
+		{
+			Isolator iso;
+			setIsolator (iso, rate, kIsolatorMinDb, kIsolatorMinDb);
+			const double mid = isolatorGainDb (iso, 1000.0, rate);
+			checkClose (mid, 0.0, 0.2, "isolator: both killed leaves the mid band" + r);
+		}
+
+		// ---- boost and cut land where the knob says ------------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, 6.0, -12.0);
+			const double low = isolatorGainDb (iso, 30.0, rate);
+			setIsolator (iso, rate, 6.0, -12.0);
+			const double high = isolatorGainDb (iso, 16000.0, rate);
+			checkClose (low, 6.0, 0.1, "isolator: +6 dB bass at 30 Hz" + r);
+			if (16000.0 < 0.45 * rate)
+				checkClose (high, -12.0, 0.3, "isolator: -12 dB treble at 16 kHz" + r);
+		}
+
+		// ---- the kill follows its frequency --------------------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, kIsolatorMinDb, 0.0, kBassHzMin, kTrebleHzDefault);
+			const double atMin = isolatorGainDb (iso, 150.0, rate);
+			setIsolator (iso, rate, kIsolatorMinDb, 0.0, kBassHzMax, kTrebleHzDefault);
+			const double atMax = isolatorGainDb (iso, 150.0, rate);
+			checkClose (atMin, 0.0, 0.5, "isolator: bass kill at 50 Hz leaves 150 Hz" + r);
+			check (atMax < -30.0, "isolator: bass kill at 500 Hz removes 150 Hz" + r);
+		}
+
+		// ---- a kill yanked in under a ringing sine: no click ----------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, 0.0, 0.0);
+			const double hz = 100.0, amp = 0.5;
+			const int total = static_cast<int> (rate);
+			std::vector<float> left (static_cast<size_t> (total)), right;
+			for (int i = 0; i < total; ++i)
+				left[i] = static_cast<float> (amp * std::sin (2.0 * M_PI * hz * i / rate));
+			right = left;
+			bool killed = false, released = false, wentFiltered = false;
+			for (int at = 0; at < total; at += 256)
+			{
+				// By block, not by `at == total / 4`: a quarter of the rate
+				// is not a multiple of 256, and the kill would never land.
+				if (!killed && at >= total / 4)
+				{
+					iso.setBassDb (kIsolatorMinDb);
+					killed = true;
+				}
+				if (!released && at >= total / 2)
+				{
+					iso.setBassDb (0.0);
+					released = true;
+				}
+				wentFiltered = wentFiltered || iso.mix () == 1.0;
+				iso.process (left.data () + at, right.data () + at, std::min (256, total - at));
+			}
+			const double natural = 2.0 * M_PI * hz / rate * amp;
+			double worst = 0.0;
+			for (int i = 1; i < total; ++i)
+				worst = std::max (worst, std::fabs (static_cast<double> (left[i]) - left[i - 1]));
+			check (killed && released && wentFiltered, "isolator: the kill test really killed" + r);
+			check (worst < 1.5 * natural, "isolator: a kill in and out under a 100 Hz sine does not click ("
+			       + std::to_string (worst / natural) + "x the sine's own slope)" + r);
+			check (iso.mix () == 0.0 && iso.bassGain () == 1.0, "isolator: back at 0 dB it returns to dry" + r);
+		}
+
+		// ---- frequencies swept hard under noise: stable ---------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, -12.0, -12.0);
+			const int total = static_cast<int> (rate);
+			std::vector<float> left (static_cast<size_t> (total)), right (static_cast<size_t> (total));
+			std::uint32_t seed = 99u;
+			for (int i = 0; i < total; ++i)
+			{
+				seed = seed * 1664525u + 1013904223u;
+				left[i] = right[i] = static_cast<float> (static_cast<int> (seed >> 8) % 20001 - 10000) / 20000.f;
+			}
+			int block = 0;
+			for (int at = 0; at < total; at += 64, ++block)
+			{
+				// Ends of the ranges, alternately, every 64 samples.
+				iso.setBassHz ((block & 1) ? kBassHzMax : kBassHzMin);
+				iso.setTrebleHz ((block & 1) ? kTrebleHzMin : kTrebleHzMax);
+				iso.process (left.data () + at, right.data () + at, std::min (64, total - at));
+			}
+			bool finite = true;
+			float peak = 0.f;
+			for (int i = 0; i < total; ++i)
+			{
+				finite = finite && std::isfinite (left[i]) && std::isfinite (right[i]);
+				peak = std::max (peak, std::fabs (left[i]));
+			}
+			check (finite && peak < 2.f, "isolator: frequencies swept end to end stay stable" + r);
+			check (std::memcmp (left.data (), right.data (), left.size () * sizeof (float)) == 0,
+			       "isolator: both channels the same for the same input" + r);
+		}
+
+		// ---- the tail ends in exact zeros ----------------------------
+		{
+			Isolator iso;
+			setIsolator (iso, rate, -6.0, 3.0);
+			std::vector<float> left (512), right (512);
+			left[0] = right[0] = 1.f;
+			iso.process (left.data (), right.data (), 512);
+			bool zero = false;
+			for (int b = 0; b < static_cast<int> (2.0 * rate / 512) && !zero; ++b)
+			{
+				std::fill (left.begin (), left.end (), 0.f);
+				std::fill (right.begin (), right.end (), 0.f);
+				iso.process (left.data (), right.data (), 512);
+				zero = std::all_of (left.begin (), left.end (), [] (float v) { return v == 0.f; })
+				       && std::all_of (right.begin (), right.end (), [] (float v) { return v == 0.f; });
+			}
+			check (zero, "isolator: an impulse's tail ends in exact silence within 2 s" + r);
+		}
+	}
+
+	// ---- wired into the instrument --------------------------------------
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		std::vector<float> left (256), right (256);
+		dsp.setBassDb (kIsolatorMinDb);
+		dsp.render (left.data (), right.data (), 256);
+		check (dsp.isolator ().mix () > 0.0, "isolator: SampleDrumDsp runs it in render()");
+		check (std::all_of (left.begin (), left.end (), [] (float v) { return v == 0.f; }),
+		       "isolator: an empty kit is still exact silence with a kill on");
+		dsp.setBassHz (90.0);
+		dsp.setTrebleHz (9000.0);
+		dsp.reset ();
+		checkClose (dsp.isolator ().bassHz (), 90.0, 1e-9, "isolator: bass frequency reaches the DSP");
+		checkClose (dsp.isolator ().trebleHz (), 9000.0, 1e-9, "isolator: treble frequency reaches the DSP");
+		check (dsp.isolator ().bassGain () == 0.0, "isolator: reset snaps the gain");
+	}
+}
+
+//------------------------------------------------------------------------
+// What the Polivoks panel reads: thumbnails, the isolator's response,
+// the voice count and the last hit.
+//------------------------------------------------------------------------
+static void testPanelData ()
+{
+	std::printf ("panel data\n");
+
+	// THUMBNAILS - absolute, min/max per slice, both channels.
+	{
+		auto full = makeSample (960, 1.f);
+		const auto t = makeThumbnail (*full);
+		check (t.size () == static_cast<std::size_t> (kThumbnailPoints) * 2, "a thumbnail is 2 x kThumbnailPoints bytes");
+		check (t[0] == 0 && t[1] == 127, "a full-scale DC file: min 0, max 127");
+
+		auto shaped = makeShapedSample (4800);   // +/-0.7, L and R opposite
+		const auto s = makeThumbnail (*shaped);
+		int lo = 0, hi = 0;
+		for (std::size_t i = 0; i < s.size (); i += 2) { lo = std::min<int> (lo, s[i]); hi = std::max<int> (hi, s[i + 1]); }
+		check (hi == 89 && lo == -89, "0.7 of full scale reads as 89, both signs (L and R both counted)");
+
+		auto tiny = makeSample (10, -0.5f);
+		const auto few = makeThumbnail (*tiny);
+		check (few.size () == static_cast<std::size_t> (kThumbnailPoints) * 2, "fewer frames than points still fills every point");
+		bool allQuiet = true;
+		for (std::size_t i = 0; i < few.size (); i += 2)
+			if (few[i] != -64 || few[i + 1] != 0)
+				allQuiet = false;
+		check (allQuiet, "and repeats rather than leaving gaps (-0.5 reads -64)");
+
+		SampleBuffer empty;
+		check (makeThumbnail (empty).empty (), "an empty buffer has no thumbnail");
+		check (makeThumbnail (*full, 0).empty (), "nor does zero points");
+	}
+
+	// THE ISOLATOR'S RESPONSE.
+	{
+		bool flat = true;
+		for (double hz = 20.0; hz <= 20000.0; hz *= 1.1)
+		{
+			if (std::fabs (isolatorResponseDb (hz, 0.0, 200.0, 0.0, 3500.0)) > 1e-9) flat = false;
+			if (std::fabs (isolatorResponseDb (hz, 0.0, 480.0, 0.0, 1600.0)) > 1e-9) flat = false;
+		}
+		check (flat, "at 0 dB / 0 dB the response is flat at any two crossovers");
+
+		checkClose (isolatorResponseDb (20.0, 6.0, 200.0, 0.0, 3500.0), 6.0, 0.01, "bass +6 reads +6 dB well below the crossover");
+		checkClose (isolatorResponseDb (20000.0, 0.0, 200.0, -12.0, 3500.0), -12.0, 0.05, "treble -12 reads -12 dB well above it");
+		check (isolatorResponseDb (20.0, kIsolatorMinDb, 200.0, 0.0, 3500.0) < -70.0, "bass killed: deep cut at 20 Hz");
+		check (isolatorResponseDb (20000.0, 0.0, 200.0, kIsolatorMinDb, 3500.0) < -50.0, "treble killed: deep cut at 20 kHz");
+		check (isolatorResponseDb (900.0, kIsolatorMinDb, 200.0, kIsolatorMinDb, 3500.0) > -1.5, "both killed: the mid band is still there");
+		check (isolatorResponseDb (900.0, kIsolatorMinDb, 200.0, kIsolatorMinDb, 3500.0) >= kIsolatorResponseFloorDb, "never below the floor");
+		checkClose (isolatorResponseDb (20.0, 0.0005, 200.0, 0.0, 3500.0), 0.0, 1e-9, "within the unity snap is exactly 0 dB, as the DSP");
+	}
+
+	// THE VOICE COUNT AND THE LAST HIT.
+	{
+		auto kick = makeSample (48000, 0.25f);
+		auto snare = makeSample (48000, 0.25f);
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		dsp.setMaxBlockSize (256);
+		dsp.setCellSample (cellIndex (0, 3), kick.get ());
+		dsp.setCellSample (cellIndex (1, 0), snare.get ());
+		dsp.syncCells (256);
+		std::vector<float> l (256), r (256);
+
+		check (decodeLastHit (dsp.lastHit ()).cell == -1, "nothing struck yet");
+		check (dsp.voicesSounding () == 0, "no voices yet");
+
+		dsp.noteOn (36, velocityFor (100), 10);
+		dsp.render (l.data (), r.data (), 256);
+		LastHit a = decodeLastHit (dsp.lastHit ());
+		check (a.cell == cellIndex (0, 3) && a.velocity == 100, "a kick at 100: cell 24, velocity 100");
+		check (dsp.voicesSounding () == 1, "one voice");
+
+		dsp.noteOn (38, velocityFor (5), 0);   // row 0 is loaded for the snare
+		dsp.render (l.data (), r.data (), 256);
+		LastHit b = decodeLastHit (dsp.lastHit ());
+		check (b.cell == cellIndex (1, 0) && b.velocity == 5 && b.sequence == a.sequence + 1, "a soft snare follows, sequence moved on");
+		check (dsp.voicesSounding () == 2, "two voices");
+
+		dsp.auditionCell (cellIndex (0, 3));
+		dsp.render (l.data (), r.data (), 256);
+		LastHit c = decodeLastHit (dsp.lastHit ());
+		check (c.cell == cellIndex (0, 3) && c.velocity == 0 && c.sequence == b.sequence + 1, "an audition: velocity 0, the same cell again is still news");
+
+		dsp.noteOn (49, velocityFor (100), 0);   // crash column is empty
+		dsp.render (l.data (), r.data (), 256);
+		check (decodeLastHit (dsp.lastHit ()).sequence == c.sequence, "a note that plays nothing is not a hit");
+
+		dsp.reset ();
+		check (dsp.voicesSounding () == 0, "reset: no voices");
+
+		check (decodeLastHit (encodeLastHit (31, 127, 0x12345)).cell == 31
+		       && decodeLastHit (encodeLastHit (31, 127, 0x12345)).velocity == 127
+		       && decodeLastHit (encodeLastHit (31, 127, 0x12345)).sequence == 0x2345, "encode/decode round trip; the sequence wraps at 16 bits");
+		check (decodeLastHit (encodeLastHit (40, 1, 1)).cell == -1, "a cell out of range decodes as nothing");
+	}
+}
+
 int main ()
 {
 	std::printf ("SampleDrum DSP tests\n");
@@ -1429,6 +1824,8 @@ int main ()
 	testDegenerateBlocks ();
 	testCellLevels ();
 	testColumnNotes ();
+	testIsolator ();
+	testPanelData ();
 	measureLevels ();
 
 	std::printf ("--------------------\n");

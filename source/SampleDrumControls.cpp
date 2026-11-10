@@ -241,6 +241,20 @@ void SpySlider::onMouseDownEvent (MouseDownEvent& event)
 	if (! event.buttonState.isLeft ())
 		return;
 
+	// OPTION-CLICK: back to the default, as one whole gesture, as the
+	// column note boxes do. The editor sets each slider's default from
+	// the parameter table.
+	if (event.modifiers.has (ModifierKey::Alt))
+	{
+		beginEdit ();
+		setValueNormalized (getDefaultValue ());
+		valueChanged ();
+		endEdit ();
+		invalid ();
+		event.consumed = true;
+		return;
+	}
+
 	// No absolute positioning: the DXi's slider moved by increments from
 	// wherever it was, and on a control 69 pixels wide jumping to the
 	// pointer would make every setting a coarse one.

@@ -86,6 +86,16 @@ const ParamDef kParams[kNumParams] = {
 	{columnNoteParam (5), "Low Tom Note",    "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[5].note), 0., 127., 127, false},
 	{columnNoteParam (6), "High Tom Note",   "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[6].note), 0., 127., 127, false},
 	{columnNoteParam (7), "Crash Note",      "",   ParamType::Enum, 0., 127., static_cast<double> (kDrumMap[7].note), 0., 127., 127, false},
+
+	//--------------------------------------------------------------------
+	// THE OUTPUT ISOLATOR. Ranges from SampleDrumDsp.h, one copy. The
+	// gains' bottom is a kill (isolatorGain); the frequencies are log.
+	// Internal == plain.
+	//--------------------------------------------------------------------
+	{kBassGain,   "Bass",        "dB", ParamType::Float,    kIsolatorMinDb, kIsolatorMaxDb, kIsolatorDefaultDb, kIsolatorMinDb, kIsolatorMaxDb, 0, true },
+	{kBassFreq,   "Bass Freq",   "Hz", ParamType::LogFloat, kBassHzMin,     kBassHzMax,     kBassHzDefault,     kBassHzMin,     kBassHzMax,     0, true },
+	{kTrebleGain, "Treble",      "dB", ParamType::Float,    kIsolatorMinDb, kIsolatorMaxDb, kIsolatorDefaultDb, kIsolatorMinDb, kIsolatorMaxDb, 0, true },
+	{kTrebleFreq, "Treble Freq", "Hz", ParamType::LogFloat, kTrebleHzMin,   kTrebleHzMax,   kTrebleHzDefault,   kTrebleHzMin,   kTrebleHzMax,   0, true },
 };
 
 //------------------------------------------------------------------------

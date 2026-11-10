@@ -78,6 +78,14 @@ static const char* const kSampleDrumCellFromAttribute  = "From";
 static const char* const kSampleDrumCellStatusMessage   = "SampleDrumCellStatus";
 static const char* const kSampleDrumCellStatusAttribute = "Status";
 
+/** OPTIONAL, on the status message, for the Polivoks panel's screens: the
+    cell's waveform (makeThumbnail - 2 x kThumbnailPoints signed bytes) and
+    its length in seconds. Absent for a cell with nothing loaded. Made by
+    the PROCESSOR, the only half that has the decoded audio - on a Mac that
+    only has the project, the embedded copy is the only copy there is. */
+static const char* const kSampleDrumThumbnailAttribute  = "Thumbnail";
+static const char* const kSampleDrumSecondsAttribute    = "Seconds";
+
 /** Controller -> processor, from a click on a loaded cell: play it now.
     Handed to the audio thread through an atomic bit mask, so the click
     is heard at the start of the next block. */
@@ -92,6 +100,18 @@ static const char* const kSampleDrumActivityRequestMessage = "SampleDrumActivity
 static const char* const kSampleDrumActivityDataMessage    = "SampleDrumActivityData";
 static const char* const kSampleDrumHitsAttribute          = "Hits";
 static const char* const kSampleDrumSoundingAttribute      = "Sounding";
+
+/** Also on the reply, for the panel's master section and header (each
+    optional - a reply without them still lights the lamps):
+      Peak      2 floats, the highest |sample| on L and R at the output
+                since the last reply (so a peak between ticks is not lost)
+      Voices    int, voices making a sound at the end of the last block
+      LastHit   int, SampleDrumDsp::lastHit() - see LastHit
+      Rate      float, the session's sample rate */
+static const char* const kSampleDrumPeakAttribute          = "Peak";
+static const char* const kSampleDrumVoicesAttribute        = "Voices";
+static const char* const kSampleDrumLastHitAttribute       = "LastHit";
+static const char* const kSampleDrumRateAttribute          = "Rate";
 
 //------------------------------------------------------------------------
 } // namespace SampleDrum

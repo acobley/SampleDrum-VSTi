@@ -33,6 +33,10 @@
 #undef INIT_CLASS_IID
 
 #include "SampleDrumState.h"
+#include "SampleDrumDsp.h"
+#include "SampleDrumParams.h"
+
+#include <cmath>
 
 #include "base/source/fstreamer.h"
 #include "public.sdk/source/common/memorystream.h"
@@ -264,6 +268,62 @@ int main ()
 
 		check (withEmpty - without == 4 + 4 * kCellCount,
 		       "an empty kit costs 132 bytes: a count and 32 zero lengths");
+	}
+
+	//--------------------------------------------------------------------
+	section ("6. The output isolator's four parameters");
+	//--------------------------------------------------------------------
+	{
+		// A PROJECT FROM 1.0.1.0, which had 41 parameters. The four
+		// isolator parameters must come back at their defaults - flat, and
+		// so bit-identical - with everything before them read as saved.
+		const int oldCount = kBassGain;
+		auto* memory = new MemoryStream ();
+		{
+			IBStreamer out (memory, kLittleEndian);
+			out.writeInt32 (kStateVersion);
+			out.writeInt32 (oldCount);
+			for (int i = 0; i < oldCount; ++i)
+				out.writeDouble (i == 0 ? 0.25 : kParams[i].defaultNormalized ());
+			out.writeInt32 (0);
+			out.writeInt32 (kCellCount);
+			for (int c = 0; c < kCellCount; ++c)
+				out.writeInt32 (0);
+		}
+		memory->seek (0, IBStream::kIBSeekSet, nullptr);
+		IBStreamer in (memory, kLittleEndian);
+		StreamState got;
+		check (readState (in, got) && got.complete,       "a 41-parameter project reads to the end");
+		check (got.params[0] == 0.25,                     "... with its trim as saved");
+		bool defaults = true;
+		for (int id : { kBassGain, kBassFreq, kTrebleGain, kTrebleFreq })
+			defaults = defaults && got.params[id] == kParams[id].defaultNormalized ();
+		check (defaults,                                  "... and the isolator at its defaults");
+		memory->release ();
+	}
+	{
+		// The defaults are the ones intended, through the log taper.
+		const ParamDef& bassHz = paramDef (kBassFreq);
+		const ParamDef& trebleHz = paramDef (kTrebleFreq);
+		check (std::fabs (bassHz.toPlain (bassHz.defaultNormalized ()) - kBassHzDefault) < 1e-9
+		       && std::fabs (trebleHz.toPlain (trebleHz.defaultNormalized ()) - kTrebleHzDefault) < 1e-9,
+		                                                  "the frequencies default to 200 Hz and 3500 Hz");
+		check (std::fabs (bassHz.toPlain (0.5) - std::sqrt (kBassHzMin * kBassHzMax)) < 1e-9,
+		                                                  "a frequency's middle is the geometric middle");
+		check (std::fabs (bassHz.toInternal (0.3) - bassHz.toPlain (0.3)) < 1e-12
+		       && std::fabs (trebleHz.toInternal (0.7) - trebleHz.toPlain (0.7)) < 1e-12,
+		                                                  "the DSP is handed the same Hz the host shows");
+		const ParamDef& bass = paramDef (kBassGain);
+		const float hostFloat = static_cast<float> (bass.defaultNormalized ());
+		check (isolatorGain (bass.toPlain (bass.defaultNormalized ())) == 1.0
+		       && isolatorGain (bass.toPlain (hostFloat)) == 1.0
+		       && isolatorGain (bass.toPlain (0.0)) == 0.0,
+		                                                  "the gains default to exactly unity (even via float) and bottom out in a kill");
+		bool titled = true;
+		for (int id : { kBassGain, kBassFreq, kTrebleGain, kTrebleFreq })
+			titled = titled && kParams[id].id == static_cast<Steinberg::Vst::ParamID> (id)
+			         && kParams[id].title != nullptr && kParams[id].units != nullptr;
+		check (titled,                                    "each row's id is its index, title and units not null");
 	}
 
 	std::printf ("\n%d checks, %d failures\n", gChecks, gFailures);

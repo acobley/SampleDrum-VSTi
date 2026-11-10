@@ -599,3 +599,177 @@ DC gain) and that the ringing is no more than Gibbs.
 * `ScopedFlushDenormals` (`source/DenormalGuard.h`, ForTran's copy with the
   compiler barriers) now wraps `SampleDrumProcessor::process`. Adding it adds a
   file to `source/`, so re-run `./setup-xcode.sh` before the next Xcode build.
+
+## 14. The output isolator: bass and treble as a DJ mixer's (2026-11-10, branch `output-isolator`)
+
+Four new controls on the **main (only) stereo output**, after the voices are
+summed and **before Output Trim**: Bass, Bass Freq, Treble, Treble Freq. It
+works like a DJ mixer's isolator, not a shelving EQ. The signal is split into
+three bands whose sum is the input's magnitude exactly. Bass and treble each
+have a gain from **kill** up to +6 dB, and the mid band stays at unity. Kill
+both bands and the snare's body is what's left.
+
+    voices ─► LR4 @ bass Hz ─┬─ low ─► allpass @ treble Hz ─► × bass ───┐
+                             └─ rest ─► LR4 @ treble Hz ─┬─ mid ─► × 1 ─┼─► Σ ─► trim
+                                                         └─ high ─► × treble
+
+| | Decision | Why |
+|---|---|---|
+| Crossovers | **Linkwitz–Riley 4th order**: two Butterworth sections in series. The low band also goes through the second split's allpass. | LR4's low and high outputs are in phase and sum to an allpass, so there's no bump or hole at the crossover. The allpass keeps the low band in phase with the mid and high bands. At unity the whole thing is AP(bass Hz) × AP(treble Hz), which is flat at **any** two frequencies, even crossed. |
+| Filters | **TPT state-variable filters in double**, 7 per channel. One SVF gives LP, HP and AP from a single state. | Stays stable and click-free while its frequency is swept, and the frequencies are automatable. Double precision because 50 Hz at 192 kHz is a very low normalised frequency. |
+| Gains | −40 … +6 dB, **bottom = kill** (`isolatorGain`, exactly 0). Within **0.001 dB of 0 dB counts as exactly 1**. | The cell-level rule. The snap is not cosmetic: 0 dB on a −40…+6 range comes back from its normalised value as about 7e-15 dB (3e-6 dB via a host's float), and anything other than exactly 1 takes the filtered path (next row). The state test caught this. |
+| 0 dB / 0 dB | **Dry, bit for bit.** When a gain leaves 0 dB, a **linear 20 ms crossfade** goes to the filtered path. It fades back to dry only once both gains have glided back to **exactly** 1. The filters run all the time. | The flat sum is still an allpass: the right level but a shifted phase. §4's promise is that a hit at default settings is the file's own samples. Fading only at unity means the two paths being mixed differ in phase only. |
+| Frequencies | Bass **50–500 Hz** (default 200), Treble **1.5–12 kHz** (default 3500), **log taper** (`ParamType::LogFloat`, `logRangeToPlain/ToNormalized`). | The ranges don't overlap, so neither is ever clamped against the other; an automation lane that silently moved a second parameter would disagree with what is heard. 200 Hz splits a kick's body from the rest; 3.5 kHz splits a snare's body from hats and cymbals. |
+| Smoothing | Gains and log2 frequency use one-pole glides (20 ms, as the trim) that **arrive** exactly. Coefficients are recomputed per sample, **only while a frequency is moving**. | No zipper noise, and nothing is spent when the frequencies are still. |
+| Parameters | Ids **41–44** (`kBassGain`, `kBassFreq`, `kTrebleGain`, `kTrebleFreq`), **appended**, all **automatable**. `kStateVersion` stays 1. | Append, never insert. A 1.0.1.0 project (41 parameters) loads with the isolator at its defaults, i.e. flat and dry. |
+| Host text | Frequencies in **whole Hz** ("3500"); gains as "+0.0" with a number even at the bottom. The panel shows "3.50 kHz" and "kill". | The validator reads text back through the leading number in the parameter's units, so "3.50 kHz" would come back as 3.5 Hz. |
+| Denormals | Filter state is flushed below 1e-30 at the end of each block. | A tail ends in **exact zeros**, which is what the processor's silence check looks for. |
+
+**The log taper in the controller.** `RangeParameter` is linear, so
+`SampleDrumParameter` overrides `toPlain`/`toNormalized` for `LogFloat`, and
+`fromString` goes through them. **Trap:** `RangeParameter`'s constructor
+computes the default through its *own* (linear) `toNormalized`, because a
+virtual call from a base constructor never reaches the override. The
+subclass constructor sets `info.defaultNormalizedValue` again for
+`LogFloat`.
+
+**Panel.** Four `SpySlider`s to the right of Output Trim, after a gap. The
+help line moved to its own row underneath, so the editor is 22 px taller.
+**Option-click any `SpySlider` → default** (added to `SpySlider`, so the
+trim gets it too; each slider's default comes from the table).
+
+**Not on the aux outputs**, if per-pad aux outputs are ever added. Each bus
+would need its own `Isolator`.
+
+### Verification (from the Linux VM)
+
+All twelve `.cpp` files compile against the SDK and VSTGUI with no new
+warnings; **0 unresolved `SampleDrum::` symbols** out of 72.
+`tools/run-tests.sh`: **all suites pass**.
+
+**DSP: 552 checks, 0 failures** (412 before). At every rate from 44.1 kHz
+to 192 kHz:
+
+* 0/0 dB is bit-identical and dry;
+* the filtered path, forced on at unity, is flat within **0.01 dB** from
+  20 Hz to 20 kHz at the default frequencies and at both ends of the
+  ranges;
+* bass kill takes 50 Hz down by more than 40 dB, and 1 kHz moves less
+  than 0.1 dB;
+* treble kill takes 14 kHz down by more than 40 dB, and 1 kHz moves less
+  than 0.1 dB;
+* with both killed, the mid band is within 0.2 dB;
+* +6 dB bass reads +6 at 30 Hz, and −12 dB treble reads −12 at 16 kHz;
+* the kill follows its frequency: with bass at 50 Hz, 150 Hz is left
+  alone; at 500 Hz, it's removed;
+* a kill in and out under a 100 Hz sine never steps more than 1.5× the
+  sine's own slope;
+* both frequencies thrown end to end every 64 samples under noise stay
+  finite and bounded, and L = R;
+* an impulse tail ends in exact zeros;
+* the isolator is wired into `render()`.
+
+Negative controls run on throwaway copies of the source:
+
+* without the low band's allpass, the flatness check fails (0.03 dB);
+* with the crossfade replaced by a jump, the click check fails (about
+  100× the sine's slope).
+
+The second control **also caught a broken test**: the kill was being
+triggered at `at == total / 4`, which is never a multiple of 256, so the
+kill never happened.
+
+**State: 29 checks, 0 failures** (21 before):
+
+* a 41-parameter project reads with the isolator at its defaults;
+* the defaults are 200 Hz and 3500 Hz through the log taper;
+* a gain's default is exactly unity, even through a float;
+* the DSP is handed the same Hz the host shows.
+
+**Not verified here:** the build, the validator, `auval`, and the panel on
+screen.
+
+### To check by hand on the Mac
+
+1. Re-run `./setup-xcode.sh --no-open`. No files were added, but it's
+   harmless.
+2. Build, then run the validator and `auval -v aumu SmDr AECo`.
+3. In a host:
+   - At defaults, a hit still nulls against the file.
+   - Bass to the bottom (the panel says "kill"): the kick's body goes and
+     the click stays.
+   - Treble to kill: the hats go.
+   - Both killed: the "telephone" mid band.
+   - Sweep Bass Freq with bass killed: the cut follows the knob without
+     zipper noise.
+   - Automate all four: there are no clicks.
+   - Option-click each slider (and the trim): it returns to its default.
+   - The host's generic editor shows "200" and "3500" Hz; type
+     "1000" into Bass Freq: it clamps to 500.
+   - Open a 1.0.1.0 project: the isolator is flat.
+4. Record the results here, then bump the version (not done on this
+   branch).
+
+## 15. Panel designs (2026-11-10)
+
+Three Polivoks black-panel mock-ups in `Designs/` (R2Synth / ForTran / SpyBand look, 70s sci-fi lettering),
+all with a new **nearly-new** finish (`weather.py` mode `0`): 1 Kit Grid (colour OLED cells + LED level
+ladders), 2 Channel Strips (a strip per drum, level knobs, amber OLEDs), 3 Pads + Scope (big white OLED of the
+last cell, rubber pads with hit lamps, mini level faders). Each has an **Isolator** section (§14): a
+three-band response screen plus Bass, Bass Freq, Treble and Treble Freq, placed before Output Trim. Sources and commands in `Designs/README.md`.
+Design 2 is now the plug-in's panel: see §16.
+
+## 16. The Polivoks panel (2026-11-10, branch `polivoks`, merged into `main`)
+
+The editor is now design 2, **Channel Strips** (`Designs/SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png`),
+1200 × 640, built **ForTran's way** (ForTran-VSTi README, "The panel"):
+
+- **`resource/pv_panel.png`** — everything that never changes (boxes, titles, legends, knob scales, OLED bezels,
+  the band in each cell's corner, the wordmark), 2x, from `tools/polivoks/d2p.js` with `window.STATIC`.
+- **`resource/pv_wear.png`** — the **nearly-new** wear as a transparent layer over everything (`wear.py`).
+- Everything that moves is drawn by views **at d2p.js's coordinates**. Move one, move both, then
+  `tools/polivoks/make-panel.sh` (needs python3 + playwright + numpy/scipy/Pillow; the VM has no playwright,
+  so the PNGs were rendered in the cloud workspace).
+
+| Piece | File | Notes |
+|---|---|---|
+| Lettering | `SciFiLettering.{h,cpp}` | ForTran's, namespace changed, **`#` and `↑` added** (D#1, F#1, A#1, C#2; "PLAYS 64-95 ↑"). |
+| Knob, lamp, text, OLED base, voice meter, overlay | `PvControls.{h,cpp}` | ForTran's subset; the voice meter takes a segment count and colours (32, amber); a lamp with no listener is an indicator. |
+| Last hit, isolator response, output meter | `SampleDrumPvViews.{h,cpp}` | new; plus `Pv::drawGlass`, `Pv::drawThumbnail`. |
+| Cells | `SampleDrumCellView` | same gestures; drawn as an amber OLED: waveform, name, lit border, **playhead**, "EMPTY / PLAYS a-b ↓" from `chooseCell`. The view is 4 px bigger than its screen for the border. |
+| Note box | `SampleDrumNoteBox` | same control; amber lettering; a **shared note is now red** (amber is the normal colour here). |
+| Cell level | `PvKnob` per cell | replaces the level bar (`SampleDrumLevelBar` and `SampleDrumControls` are now unused but still compiled — delete when convenient). Value printed beside it; "OFF" from `cellLevelGain`. Alt-click / double-click = default. |
+| Isolator | 4 `PvKnob`s + response screen | "KILL" from `isolatorGain`; the curve is **`isolatorResponseDb`** (new, SDK-free): the LR4 network in the frequency domain, flat to 1e-9 dB at 0/0 (tested). |
+| Trim, Bypass, Over | `PvKnob`, `PvLamp` (Bypass is the switch), `PvLamp` indicator | OVER lights 1.5 s after a peak ≥ 0 dBFS. |
+
+**New data from the processor** (all on the UI thread, as §5 requires):
+
+- **Thumbnails**: `makeThumbnail` (SDK-free, `SampleDrumSample`) — 96 min/max pairs as signed bytes, **absolute**
+  (127 = full scale). Made once in `loadCell` from the decoded audio and sent on the **status message**
+  (`Thumbnail`, `Seconds`), so it works from the embedded copy on a Mac without the files. The controller believes
+  it only for the path it was made from, like the status.
+- **Activity reply** gains `Peak` (L/R, max since the last reply — the audio thread raises an atomic, the reply
+  `exchange(0)`s it), `Voices` (`SampleDrumDsp::voicesSounding`, an atomic set at the end of each block — the old
+  `activeVoices()` reads the voice array and is **not** safe from the UI thread), `LastHit` (cell, velocity, a
+  16-bit sequence, packed in one atomic word; set when a voice actually **starts**, so a note on an empty column is
+  not a hit) and `Rate`. All optional on the reading side.
+- The playheads are **estimated** in the editor from the hit time and the file's length; nothing extra is sent.
+
+### Verification (from the Linux VM)
+
+All 15 `.cpp` files compile against the SDK and VSTGUI with `-Wall -Wextra` (no warnings in our code);
+**0 unresolved `SampleDrum::` symbols** out of 101. `tools/run-tests.sh`: **DSP 578 / 0** (adds `testPanelData`:
+thumbnails, the response curve, voice count and last hit), **State 29 / 0**, versions agree, installer suites pass.
+
+**Not verified:** the Mac build, the validator, `auval`, and anything on screen. In particular check by hand:
+
+1. `./setup-xcode.sh --no-open` (**new source files and two new PNGs**), build, validator, `auval -v aumu SmDr AECo`.
+2. The panel matches the design PNG; nothing is offset from the printed bezels/scales (a mismatch means d2p.js and
+   `SampleDrumEditor.h` disagree).
+3. Drop a .wav: name and waveform appear; an empty cell under it reads "PLAYS … ↓/↑"; a missing file shows red.
+4. Play: cells light with a moving playhead, the column's HIT lamp, LAST HIT shows drum/band/file/VEL; click a cell
+   → "CLICKED".
+5. Knobs: drag, Shift-drag, wheel, Alt-click/double-click default; automation moves them; the level shows "OFF" at
+   the bottom, the isolator "KILL".
+6. Isolator curve follows all four knobs; two full-scale hits light OVER; BYPASS toggles and silences.
+7. Two editors open on one instance, and a cell dragged between two instances, still behave as §9 says.

@@ -28,8 +28,11 @@
 // FLASHES when struck, because a hi-hat hit is shorter than one redraw
 // and would otherwise never be seen at all.
 //
-// No bitmaps, like every control in this folder's plug-ins: rectangles
-// and text, so the panel is resolution-independent for free.
+// THE POLIVOKS LOOK (since the Polivoks panel): an amber OLED with the
+// file's waveform, its name in the 70s sci-fi lettering, an amber border
+// while it sounds, a playhead across the waveform, and - when empty - which
+// row a hit here plays instead. Paths and lettering only; the screen's
+// bezel is on the panel bitmap behind it.
 //------------------------------------------------------------------------
 
 #pragma once
@@ -42,6 +45,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace SampleDrum {
 
@@ -68,6 +72,21 @@ public:
 
 	/** From the editor's timer: `lit` 0..1, the lamp's brightness. */
 	void setLamp (float lit);
+
+	/** The waveform (makeThumbnail), from the processor via the controller. */
+	void setThumbnail (const std::vector<std::int8_t>& thumb);
+
+	/** An EMPTY cell: the row a hit at this velocity plays instead
+	    (chooseCell), or -1 when the column is empty. */
+	void setFallback (int row);
+
+	/** Where the last hit has got to, 0..1 across the waveform; negative
+	    hides it. Only drawn while the cell is lit. */
+	void setPlayhead (double position);
+
+	/** How far the view reaches past its screen on every side, for the
+	    lit border (d2p.js: the screen's rect extended by 3, stroke 1.6). */
+	static constexpr VSTGUI::CCoord kGlowMargin = 4.;
 
 	bool playable () const { return !mPath.empty () && mStatus == SampleStatus::Loaded; }
 
@@ -139,6 +158,9 @@ private:
 	std::string mOverlay;
 	SampleStatus mStatus = SampleStatus::Empty;
 	float mLamp = 0.f;
+	std::vector<std::int8_t> mThumb;
+	int mFallbackRow = -1;
+	double mPlayhead = -1.;
 	bool mDragOver = false;
 	/** The operation the current drag-over will be: a file from outside
 	    and a cell from another instance are always Copy. */

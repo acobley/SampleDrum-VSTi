@@ -4,7 +4,7 @@
 
 #include "SampleDrumNoteBox.h"
 
-#include "SampleDrumControls.h"
+#include "SampleDrumPvViews.h"
 #include "SampleDrumKit.h"
 #include "SampleDrumParams.h"
 
@@ -18,10 +18,9 @@ namespace SampleDrum {
 
 namespace {
 
-const CColor kBoxFill   ( 30,  30,  30, 255);
-const CColor kBoxEdge   (100, 100, 100, 255);
-const CColor kArrow     (150, 150, 150, 255);
-const CColor kShared    (255, 190,  60, 255);   // Project6's "pending" amber
+// THE POLIVOKS NOTE BOX (tools/polivoks/d2p.js): the bezel is on the panel
+// bitmap; this draws "< 36 C1 >" in amber lettering and the glass. Every
+// screen is amber in this design, so a SHARED note - the warning - is red.
 
 /** How wide each clickable end is, as a fraction of the box. */
 constexpr CCoord kEndFraction = 0.25;
@@ -70,29 +69,23 @@ void SampleDrumNoteBox::refreshTooltip ()
 //------------------------------------------------------------------------
 void SampleDrumNoteBox::draw (CDrawContext* context)
 {
+	context->setDrawMode (kAntiAliasing | kNonIntegralMode);
 	const CRect r = getViewSize ();
+	const double baseline = r.top + r.getHeight () / 2. + 3.2;
 
-	context->setFillColor (kBoxFill);
-	context->drawRect (r, kDrawFilled);
-	context->setLineWidth (1.);
-	context->setFrameColor (kBoxEdge);
-	context->drawRect (r, kDrawStroked);
-
-	const CCoord endWidth = r.getWidth () * kEndFraction;
-	context->setFont (panelFont ());
-
-	context->setFontColor (kArrow);
-	context->drawString ("<", CRect (r.left, r.top, r.left + endWidth, r.bottom), kCenterText, true);
-	context->drawString (">", CRect (r.right - endWidth, r.top, r.right, r.bottom), kCenterText, true);
+	SciFi::drawText (context, "\xE2\x80\xB9", CPoint (r.left + 7., baseline), 9., false, Pv::kOledText,
+	                 SciFi::Align::Left);
+	SciFi::drawText (context, "\xE2\x80\xBA", CPoint (r.right - 7., baseline), 9., false, Pv::kOledText,
+	                 SciFi::Align::Right);
 
 	// THE SHARED FORMATTING - the same text the host shows for this
 	// parameter.
 	char text[16] = {};
 	formatNote (note (), text, static_cast<int> (sizeof (text)));
-	context->setFontColor (mShared ? kShared : Colours::kValue);
-	context->drawString (text, CRect (r.left + endWidth, r.top, r.right - endWidth, r.bottom),
-	                     kCenterText, true);
+	SciFi::drawText (context, text, CPoint (r.getCenter ().x, baseline), 9., false,
+	                 mShared ? Pv::kRed : Pv::kScreen, SciFi::Align::Centre);
 
+	Pv::drawGlass (context, r);
 	setDirty (false);
 }
 

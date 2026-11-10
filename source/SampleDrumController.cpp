@@ -3,6 +3,7 @@
 //------------------------------------------------------------------------
 
 #include "SampleDrumController.h"
+
 #include "SampleDrumDsp.h"
 #include "SampleDrumEditor.h"
 #include "SampleDrumIDs.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <random>
 
 using namespace Steinberg;
@@ -45,6 +47,29 @@ public:
 	                  kRootUnitId, USTRING (def.title))
 	, mDef (def)
 	{
+		// RangeParameter's constructor worked out the default through ITS
+		// OWN toNormalized - linear, because a virtual call from a base
+		// constructor never reaches the override. For a log parameter that
+		// default is wrong; set it again now the override exists.
+		if (mDef.type == ParamType::LogFloat)
+			info.defaultNormalizedValue = valueNormalized = mDef.defaultNormalized ();
+	}
+
+	/** The LOG TAPER for a frequency. Every conversion the SDK makes -
+	    text to value (fromString), the host's plain-value calls - comes
+	    through these two, so overriding them is all it takes. */
+	ParamValue toPlain (ParamValue normalized) const SMTG_OVERRIDE
+	{
+		if (mDef.type == ParamType::LogFloat)
+			return mDef.toPlain (normalized);
+		return RangeParameter::toPlain (normalized);
+	}
+
+	ParamValue toNormalized (ParamValue plain) const SMTG_OVERRIDE
+	{
+		if (mDef.type == ParamType::LogFloat)
+			return mDef.toNormalized (plain);
+		return RangeParameter::toNormalized (plain);
 	}
 
 	void toString (ParamValue normalized, String128 string) const SMTG_OVERRIDE
@@ -67,6 +92,19 @@ public:
 			// "36 C1": the number first, so the host's default text-to-value
 			// reading (and the validator's round trip) finds it.
 			formatNote (noteFromNormalized (normalized), text, static_cast<int> (sizeof (text)));
+		}
+		else if (mDef.id == kBassFreq || mDef.id == kTrebleFreq)
+		{
+			// WHOLE HERTZ, ALWAYS - never "3.50 kHz": the default text-to-value
+			// reading takes the leading number in the parameter's units, and
+			// "3.50" would come back as 3.5 Hz. The panel says "3.5k".
+			std::snprintf (text, sizeof (text), "%.0f", mDef.toPlain (normalized));
+		}
+		else if (mDef.id == kBassGain || mDef.id == kTrebleGain)
+		{
+			// A number even at the bottom, for the cell levels' reason
+			// below; the panel says "kill".
+			std::snprintf (text, sizeof (text), "%+.1f", mDef.toPlain (normalized));
 		}
 		else if (isCellLevelParam (mDef.id))
 		{
@@ -216,6 +254,21 @@ tresult PLUGIN_API SampleDrumController::notify (IMessage* message)
 
 			mReportedPaths[cell] = path;
 			mReported[cell] = static_cast<SampleStatus> (status);
+
+			// The waveform and length, when the processor sent them.
+			mThumbnails[cell].clear ();
+			mSeconds[cell] = 0.0;
+			const void* thumb = nullptr;
+			uint32 thumbSize = 0;
+			if (message->getAttributes ()->getBinary (kSampleDrumThumbnailAttribute, thumb, thumbSize) == kResultOk
+			    && thumb != nullptr && thumbSize == 2u * kThumbnailPoints)
+			{
+				const auto* b = static_cast<const std::int8_t*> (thumb);
+				mThumbnails[cell].assign (b, b + thumbSize);
+				double seconds = 0.0;
+				if (message->getAttributes ()->getFloat (kSampleDrumSecondsAttribute, seconds) == kResultOk)
+					mSeconds[cell] = seconds;
+			}
 			refreshCellInEditors (static_cast<int> (cell));
 		}
 		return kResultOk;
@@ -231,9 +284,26 @@ tresult PLUGIN_API SampleDrumController::notify (IMessage* message)
 		    && hitsSize == sizeof (std::uint32_t) * kCellCount
 		    && soundingSize == sizeof (std::uint8_t) * kCellCount)
 		{
+			// The rest is optional: a processor that did not send it still
+			// lights the lamps.
+			OutputActivity output;
+			const void* peak = nullptr;
+			uint32 peakSize = 0;
+			if (message->getAttributes ()->getBinary (kSampleDrumPeakAttribute, peak, peakSize) == kResultOk
+			    && peak != nullptr && peakSize == sizeof (output.peak))
+				std::memcpy (output.peak, peak, sizeof (output.peak));
+			int64 value = 0;
+			if (message->getAttributes ()->getInt (kSampleDrumVoicesAttribute, value) == kResultOk)
+				output.voices = static_cast<int> (value);
+			if (message->getAttributes ()->getInt (kSampleDrumLastHitAttribute, value) == kResultOk)
+				output.lastHit = static_cast<std::uint32_t> (value);
+			double rate = 0.0;
+			if (message->getAttributes ()->getFloat (kSampleDrumRateAttribute, rate) == kResultOk)
+				output.sampleRate = rate;
+
 			for (auto* editor : mEditors)
 				editor->setActivity (static_cast<const std::uint32_t*> (hits),
-				                     static_cast<const std::uint8_t*> (sounding));
+				                     static_cast<const std::uint8_t*> (sounding), output);
 		}
 		return kResultOk;
 	}
@@ -256,6 +326,23 @@ SampleStatus SampleDrumController::cellStatus (int cell) const
 
 	// Only a report ABOUT THIS FILE is believed; otherwise the guess.
 	return (mReportedPaths[cell] == mPaths[cell]) ? mReported[cell] : SampleStatus::Loaded;
+}
+
+//------------------------------------------------------------------------
+const std::vector<std::int8_t>& SampleDrumController::cellThumbnail (int cell) const
+{
+	static const std::vector<std::int8_t> kNone;
+	if (!isCellIndex (cell) || mPaths[cell].empty () || mReportedPaths[cell] != mPaths[cell])
+		return kNone;
+	return mThumbnails[cell];
+}
+
+//------------------------------------------------------------------------
+double SampleDrumController::cellSeconds (int cell) const
+{
+	if (!isCellIndex (cell) || mPaths[cell].empty () || mReportedPaths[cell] != mPaths[cell])
+		return 0.0;
+	return mSeconds[cell];
 }
 
 //------------------------------------------------------------------------

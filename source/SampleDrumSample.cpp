@@ -538,4 +538,40 @@ std::string wavPathFromDragText (const std::string& text)
 }
 
 //------------------------------------------------------------------------
+std::vector<std::int8_t> makeThumbnail (const SampleBuffer& sample, int points)
+{
+	std::vector<std::int8_t> out;
+	if (sample.empty () || points < 1)
+		return out;
+
+	const auto toByte = [] (float v)
+	{
+		const float c = std::max (-1.f, std::min (1.f, v));
+		return static_cast<std::int8_t> (std::lround (c * 127.f));
+	};
+
+	const long long frames = sample.frameCount;
+	const std::size_t available = sample.samples.size () / kSampleChannels;
+	out.reserve (static_cast<std::size_t> (points) * 2);
+	for (int p = 0; p < points; ++p)
+	{
+		long long from = frames * p / points;
+		long long to   = frames * (p + 1) / points;
+		if (to <= from)
+			to = from + 1;   // fewer frames than points: repeat, never skip
+		float lo = 0.f, hi = 0.f;
+		for (long long f = from; f < to && f < frames && static_cast<std::size_t> (f) < available; ++f)
+			for (int ch = 0; ch < kSampleChannels; ++ch)
+			{
+				const float v = sample.samples[static_cast<std::size_t> (f) * kSampleChannels + ch];
+				lo = std::min (lo, v);
+				hi = std::max (hi, v);
+			}
+		out.push_back (toByte (lo));
+		out.push_back (toByte (hi));
+	}
+	return out;
+}
+
+//------------------------------------------------------------------------
 } // namespace SampleDrum
