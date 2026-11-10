@@ -163,6 +163,21 @@ void SampleDrumProcessor::applyParam (ParamID id, double normalized)
 			mDsp.setOutputTrimDb (def.toInternal (normalized));
 			break;
 
+		// THE ISOLATOR. toInternal() takes the log taper for the two
+		// frequencies (ParamType::LogFloat).
+		case kBassGain:
+			mDsp.setBassDb (def.toInternal (normalized));
+			break;
+		case kBassFreq:
+			mDsp.setBassHz (def.toInternal (normalized));
+			break;
+		case kTrebleGain:
+			mDsp.setTrebleDb (def.toInternal (normalized));
+			break;
+		case kTrebleFreq:
+			mDsp.setTrebleHz (def.toInternal (normalized));
+			break;
+
 		default:
 			// A parameter in the table that nothing reads. Appending one
 			// and forgetting this switch is the quiet failure.

@@ -55,6 +55,220 @@ float Smoother::next ()
 }
 
 //------------------------------------------------------------------------
+// Isolator
+//------------------------------------------------------------------------
+namespace {
+
+/** Butterworth damping, 1/Q with Q = 1/sqrt 2. The value that makes two
+    sections in series a Linkwitz-Riley crossover, and LP^2 + HP^2 the
+    allpass (s^2 - k s + 1) / (s^2 + k s + 1) the SVF's own `ap` output is. */
+constexpr double kSvfK = 1.4142135623730951;
+
+/** The recursive state is flushed below this. Double, so far above the
+    denormal range; it is what lets a tail end in exact zeros, which is
+    what the processor's silence flags look for. */
+constexpr double kIsolatorStateFloor = 1e-30;
+
+/** A gain glide counts as arrived within this of its target. */
+constexpr double kGainSnap = 1e-6;
+
+/** A frequency glide, in octaves. */
+constexpr double kOctaveSnap = 1e-6;
+
+} // anonymous namespace
+
+//------------------------------------------------------------------------
+void Isolator::Glide::next (double coeff, double snapWithin)
+{
+	value += (target - value) * coeff;
+	if (std::fabs (target - value) < snapWithin)
+		value = target;
+}
+
+//------------------------------------------------------------------------
+Isolator::Isolator ()
+{
+	mBass.target      = isolatorGain (kIsolatorDefaultDb);
+	mTreble.target    = isolatorGain (kIsolatorDefaultDb);
+	mBassOct.target   = std::log2 (kBassHzDefault);
+	mTrebleOct.target = std::log2 (kTrebleHzDefault);
+	setSampleRate (44100.0);
+}
+
+//------------------------------------------------------------------------
+void Isolator::setSampleRate (double sampleRate)
+{
+	if (!(sampleRate >= 1000.0))
+		sampleRate = 44100.0;
+	mSampleRate = sampleRate;
+	mCoeff   = 1.0 - std::exp (-1.0 / (kIsolatorSmoothingSeconds * mSampleRate));
+	mMixStep = 1.0 / std::max (1.0, kIsolatorSmoothingSeconds * mSampleRate);
+	reset ();
+}
+
+//------------------------------------------------------------------------
+void Isolator::reset ()
+{
+	mBass.snap ();
+	mTreble.snap ();
+	mBassOct.snap ();
+	mTrebleOct.snap ();
+
+	// Dry exactly when both gains are exactly unity - the same rule
+	// process() applies, without the fade.
+	mMix.target = (mBass.target == 1.0 && mTreble.target == 1.0 && !mForceFiltered) ? 0.0 : 1.0;
+	mMix.snap ();
+
+	mBassCoeffs   = coeffsFor (std::exp2 (mBassOct.value));
+	mTrebleCoeffs = coeffsFor (std::exp2 (mTrebleOct.value));
+
+	for (auto& channel : mState)
+		for (SvfState& state : channel)
+			state = SvfState ();
+}
+
+//------------------------------------------------------------------------
+void Isolator::setBassDb (double db)   { mBass.target   = isolatorGain (db); }
+void Isolator::setTrebleDb (double db) { mTreble.target = isolatorGain (db); }
+
+void Isolator::setBassHz (double hz)
+{
+	mBassOct.target = std::log2 (std::min (kBassHzMax, std::max (kBassHzMin, hz)));
+}
+
+void Isolator::setTrebleHz (double hz)
+{
+	mTrebleOct.target = std::log2 (std::min (kTrebleHzMax, std::max (kTrebleHzMin, hz)));
+}
+
+//------------------------------------------------------------------------
+double Isolator::clampHz (double hz) const
+{
+	return std::max (1.0, std::min (hz, kIsolatorMaxHzFraction * mSampleRate));
+}
+
+//------------------------------------------------------------------------
+Isolator::Coeffs Isolator::coeffsFor (double hz) const
+{
+	// The TPT (bilinear, prewarped) SVF: the cutoff lands on `hz` exactly
+	// at every rate.
+	const double g = std::tan (3.14159265358979323846 * clampHz (hz) / mSampleRate);
+	Coeffs c;
+	c.a1 = 1.0 / (1.0 + g * (g + kSvfK));
+	c.a2 = g * c.a1;
+	c.a3 = g * c.a2;
+	return c;
+}
+
+//------------------------------------------------------------------------
+Isolator::SvfOut Isolator::tick (const Coeffs& c, SvfState& s, double x)
+{
+	const double v3 = x - s.ic2;
+	const double v1 = c.a1 * s.ic1 + c.a2 * v3;
+	const double v2 = s.ic2 + c.a2 * s.ic1 + c.a3 * v3;
+	s.ic1 = 2.0 * v1 - s.ic1;
+	s.ic2 = 2.0 * v2 - s.ic2;
+
+	SvfOut out;
+	out.lp = v2;
+	out.hp = x - kSvfK * v1 - v2;
+	out.ap = x - 2.0 * kSvfK * v1;
+	return out;
+}
+
+//------------------------------------------------------------------------
+void Isolator::flushStates ()
+{
+	for (auto& channel : mState)
+		for (SvfState& state : channel)
+		{
+			if (std::fabs (state.ic1) < kIsolatorStateFloor)
+				state.ic1 = 0.0;
+			if (std::fabs (state.ic2) < kIsolatorStateFloor)
+				state.ic2 = 0.0;
+		}
+}
+
+//------------------------------------------------------------------------
+void Isolator::process (float* left, float* right, int numSamples)
+{
+	if (numSamples <= 0 || left == nullptr || right == nullptr)
+		return;
+
+	float* const channels[2] = { left, right };
+
+	for (int i = 0; i < numSamples; ++i)
+	{
+		// ONE set of glides per sample, shared by both channels, so the
+		// stereo image cannot walk while a knob moves.
+		if (!mBass.settled ())
+			mBass.next (mCoeff, kGainSnap);
+		if (!mTreble.settled ())
+			mTreble.next (mCoeff, kGainSnap);
+
+		// The coefficients are recomputed only while a frequency is
+		// actually moving. The SVF tolerates that per sample.
+		if (!mBassOct.settled ())
+		{
+			mBassOct.next (mCoeff, kOctaveSnap);
+			mBassCoeffs = coeffsFor (std::exp2 (mBassOct.value));
+		}
+		if (!mTrebleOct.settled ())
+		{
+			mTrebleOct.next (mCoeff, kOctaveSnap);
+			mTrebleCoeffs = coeffsFor (std::exp2 (mTrebleOct.value));
+		}
+
+		// DRY ONLY ONCE BOTH GAINS HAVE ARRIVED AT EXACTLY UNITY. Going
+		// back to 0 dB, the gains glide home on the filtered path first,
+		// then the dry signal is faded in - so the two paths being mixed
+		// differ only in phase. A LINEAR ramp, so it arrives exactly.
+		mMix.target = (mBass.value == 1.0 && mTreble.value == 1.0
+		               && mBass.target == 1.0 && mTreble.target == 1.0
+		               && !mForceFiltered) ? 0.0 : 1.0;
+		if (mMix.value < mMix.target)
+			mMix.value = std::min (mMix.target, mMix.value + mMixStep);
+		else if (mMix.value > mMix.target)
+			mMix.value = std::max (mMix.target, mMix.value - mMixStep);
+
+		const double bass   = mBass.value;
+		const double treble = mTreble.value;
+		const double wetMix = mMix.value;
+
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			SvfState* const st = mState[ch];
+			const double x = channels[ch][i];
+
+			// Split 1, at the bass frequency: one shared first section,
+			// then a second low-pass and a second high-pass - LR4 each.
+			const SvfOut s1 = tick (mBassCoeffs, st[0], x);
+			const double low  = tick (mBassCoeffs, st[1], s1.lp).lp;
+			const double rest = tick (mBassCoeffs, st[2], s1.hp).hp;
+
+			// The low band through split 2's allpass, to stay in phase.
+			const double lowAligned = tick (mTrebleCoeffs, st[3], low).ap;
+
+			// Split 2, at the treble frequency.
+			const SvfOut s2 = tick (mTrebleCoeffs, st[4], rest);
+			const double mid  = tick (mTrebleCoeffs, st[5], s2.lp).lp;
+			const double high = tick (mTrebleCoeffs, st[6], s2.hp).hp;
+
+			const double wet = bass * lowAligned + mid + treble * high;
+
+			// Untouched while dry: the filters ran (they stay settled for
+			// the moment they are faded in) but the sample is not written.
+			if (wetMix == 1.0)
+				channels[ch][i] = static_cast<float> (wet);
+			else if (wetMix > 0.0)
+				channels[ch][i] = static_cast<float> (x + (wet - x) * wetMix);
+		}
+	}
+
+	flushStates ();
+}
+
+//------------------------------------------------------------------------
 // SampleDrumDsp
 //------------------------------------------------------------------------
 SampleDrumDsp::SampleDrumDsp ()
@@ -92,6 +306,7 @@ void SampleDrumDsp::setSampleRate (double sampleRate)
 	mTrim.setSampleRate (mSampleRate, kTrimSmoothingSeconds);
 	mFadeSamples = std::max (1, static_cast<int> (kChokeFadeSeconds * mSampleRate + 0.5));
 	mCellLevelCoeff = 1.0 - std::exp (-1.0 / (kCellLevelSmoothingSeconds * mSampleRate));
+	mIsolator.setSampleRate (mSampleRate);
 
 	// The band-limited read's banks: sized here, off the audio thread, and
 	// the steps of the usual high-rate files built in advance.
@@ -155,6 +370,10 @@ void SampleDrumDsp::reset ()
 
 	for (auto& sounding : mSounding)
 		sounding.store (false, std::memory_order_relaxed);
+
+	// The isolator's glides snap and its filters empty, for the trim's
+	// reason, and so nothing of the old project's tail rings into the new.
+	mIsolator.reset ();
 }
 
 //------------------------------------------------------------------------
@@ -569,6 +788,9 @@ void SampleDrumDsp::render (float* left, float* right, int numSamples)
 	for (int cell = 0; cell < kCellCount; ++cell)
 		mSounding[cell].store (sounding[cell], std::memory_order_relaxed);
 
+	// The isolator, then the trim - so the trim stays the last stage, the
+	// one that answers clipping, including a boosted bass's.
+	mIsolator.process (left, right, numSamples);
 	applyTrim (left, right, numSamples);
 }
 

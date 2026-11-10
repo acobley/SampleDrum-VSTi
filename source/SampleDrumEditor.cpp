@@ -25,6 +25,26 @@ namespace {
     whatever the host left in the window. Project6's panel colour. */
 const CColor kPanel (64, 64, 64, 255);
 
+/** The isolator sliders' readouts. From the parameter table and the DSP's
+    own kill test, so the panel cannot say "kill" while sound comes out. */
+std::string formatIsolator (ParamID tag, float normalized)
+{
+	const double plain = paramDef (tag).toPlain (normalized);
+	char text[32] = {};
+	if (tag == kBassGain || tag == kTrebleGain)
+	{
+		if (isolatorGain (plain) <= 0.0)
+			std::snprintf (text, sizeof (text), "kill");
+		else
+			std::snprintf (text, sizeof (text), "%+.1f dB", plain);
+	}
+	else if (plain >= 1000.0)
+		std::snprintf (text, sizeof (text), "%.2f kHz", plain / 1000.0);
+	else
+		std::snprintf (text, sizeof (text), "%.0f Hz", plain);
+	return std::string (text);
+}
+
 } // namespace
 
 //------------------------------------------------------------------------
@@ -220,14 +240,30 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 		std::snprintf (text, sizeof (text), "%+.1f dB", paramDef (kOutputTrim).toPlain (normalized));
 		return std::string (text);
 	});
+	mTrim->setDefaultValue (static_cast<float> (paramDef (kOutputTrim).defaultNormalized ()));
 	if (mController)
 		mTrim->setValueNormalized (static_cast<float> (mController->getParamNormalized (kOutputTrim)));
 	frame->addView (mTrim);
 
-	addLabel (CRect (kGridLeft + kSliderWidth + 12, kSliderTop, kEditorWidth - kMargin,
-	                 kSliderTop + kSliderHeight),
+	// THE OUTPUT ISOLATOR: bass, its crossover, treble, its crossover.
+	for (int i = 0; i < 4; ++i)
+	{
+		const ParamID tag = kIsolatorTags[i];
+		const CCoord x = kIsolatorLeft + i * (kSliderWidth + kSliderGap);
+		auto* slider = new SpySlider (CRect (x, kSliderTop, x + kSliderWidth, kSliderTop + kSliderHeight),
+		                              this, static_cast<int32_t> (tag));
+		slider->setLabel (paramDef (tag).title);
+		slider->setFormatter ([tag] (float normalized) { return formatIsolator (tag, normalized); });
+		slider->setDefaultValue (static_cast<float> (paramDef (tag).defaultNormalized ()));
+		if (mController)
+			slider->setValueNormalized (static_cast<float> (mController->getParamNormalized (tag)));
+		mIsolator[i] = slider;
+		frame->addView (slider);
+	}
+
+	addLabel (CRect (kGridLeft, kHelpTop, kEditorWidth - kMargin, kHelpTop + kHelpHeight),
 	          "Drop .wav on a cell.  Click: play.  Drag to another cell: move (Option: copy).  "
-	          "Right-click: empty.  Bar under a cell: level.",
+	          "Right-click: empty.  Bar under a cell: level.  Option-click a slider: default.",
 	          kValue, kLeftText);
 
 	mTimer = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) { onTimer (); }, kTimerMs, true);
@@ -248,6 +284,8 @@ void PLUGIN_API SampleDrumEditor::close ()
 	for (auto*& box : mNotes)
 		box = nullptr;
 	mTrim = nullptr;
+	for (auto*& slider : mIsolator)
+		slider = nullptr;
 	mHaveHits = false;
 
 	if (frame)
@@ -309,6 +347,13 @@ void SampleDrumEditor::updateControl (ParamID tag, ParamValue normalized)
 		mTrim->setValueNormalized (static_cast<float> (normalized));
 		mTrim->invalid ();
 	}
+
+	for (int i = 0; i < 4; ++i)
+		if (tag == kIsolatorTags[i] && mIsolator[i])
+		{
+			mIsolator[i]->setValueNormalized (static_cast<float> (normalized));
+			mIsolator[i]->invalid ();
+		}
 
 	const int cell = cellOfLevelParam (tag);
 	if (isCellIndex (cell) && mLevels[cell])

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include "SampleDrumDsp.h"
 #include "SampleDrumKit.h"
 
 #include "pluginterfaces/vst/vsttypes.h"
@@ -82,7 +83,23 @@ enum Param : Steinberg::Vst::ParamID
 	kColumnNoteBase = kCellLevelEnd,
 	kColumnNoteEnd  = kColumnNoteBase + kColumns,
 
-	kNumParams = kColumnNoteEnd,
+	//--------------------------------------------------------------------
+	/** THE OUTPUT ISOLATOR - bass and treble on the main output, as a DJ
+	    mixer's isolator: see Isolator in SampleDrumDsp.h.
+
+	    Ids 41..44. The two gains are dB, -40..+6, and the bottom is a
+	    KILL. The two frequencies are Hz on a LOGARITHMIC taper
+	    (ParamType::LogFloat), over ranges that do not overlap, so neither
+	    is ever clamped against the other. All four automatable: an
+	    isolator sweep is a performance gesture.
+
+	    Appended after the column notes, never among them. */
+	kBassGain = kColumnNoteEnd,
+	kBassFreq,
+	kTrebleGain,
+	kTrebleFreq,
+
+	kNumParams,
 
 	//--------------------------------------------------------------------
 	/** Standard VST3 bypass.
@@ -172,14 +189,25 @@ inline double normalizedFromNote (int note)
 
 static_assert (kCellLevelBase == 1, "the cell levels follow the trim");
 static_assert (kColumnNoteBase == 1 + kCellCount, "the column notes follow the levels");
-static_assert (kNumParams == 1 + kCellCount + kColumns, "trim + a level per cell + a note per column");
+static_assert (kBassGain == 1 + kCellCount + kColumns, "the isolator follows the column notes");
+static_assert (kNumParams == 1 + kCellCount + kColumns + 4, "trim + a level per cell + a note per column + the isolator");
+
+constexpr bool isIsolatorParam (Steinberg::Vst::ParamID id)
+{
+	return id == kBassGain || id == kBassFreq || id == kTrebleGain || id == kTrebleFreq;
+}
 
 //------------------------------------------------------------------------
 enum class ParamType
 {
 	Float,
 	Bool,
-	Enum
+	Enum,
+	/** A float on a LOGARITHMIC taper - a frequency. plainMin must be
+	    above zero. The conversions are logRangeToPlain/ToNormalized in
+	    SampleDrumDsp.h; the controller's parameter class uses them too,
+	    so the host's text and automation agree with the table. */
+	LogFloat
 };
 
 //------------------------------------------------------------------------
@@ -200,11 +228,15 @@ struct ParamDef
 	//--------------------------------------------------------------------
 	double toPlain (double normalized) const
 	{
+		if (type == ParamType::LogFloat)
+			return logRangeToPlain (normalized, plainMin, plainMax);
 		return plainMin + normalized * (plainMax - plainMin);
 	}
 
 	double toNormalized (double plain) const
 	{
+		if (type == ParamType::LogFloat)
+			return logRangeToNormalized (plain, plainMin, plainMax);
 		if (plainMax == plainMin)
 			return 0.0;
 		return (plain - plainMin) / (plainMax - plainMin);
@@ -216,6 +248,10 @@ struct ParamDef
 	{
 		if (type == ParamType::Bool)
 			return (normalized < 0.5) ? 0.0 : 1.0;
+
+		// Internal == plain for every LogFloat: the taper is the range.
+		if (type == ParamType::LogFloat)
+			return logRangeToPlain (normalized, internalMin, internalMax);
 
 		const double v = internalMin + normalized * (internalMax - internalMin);
 		if (type == ParamType::Enum)

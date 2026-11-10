@@ -20,7 +20,8 @@
 // arrives with a sample offset; the kit's rules pick a cell; a voice
 // plays that cell's sample from the start to the end, once, at unity
 // gain, resampled linearly to the host's rate. Voices sum, pass through
-// the smoothed output trim, and that is the instrument.
+// the output isolator (bass and treble, see Isolator) and the smoothed
+// output trim, and that is the instrument.
 //
 // THE THREADING, which is the part to understand before changing
 // anything here:
@@ -208,6 +209,188 @@ struct SincBank
 };
 
 //------------------------------------------------------------------------
+// THE OUTPUT ISOLATOR - a DJ mixer's isolator on the main output
+//
+// Not a shelving EQ: a THREE-WAY BAND SPLIT whose bands add back to the
+// input's magnitude exactly, with a gain on the low and the high band and
+// the mid band fixed at unity. The bottom of either gain is a KILL - the
+// band is gone, not 40 dB down - so the kick can be pulled out of a kit
+// and the hats taken off the top. Kill both and the snare's body is left.
+//
+//   voices ─► LR4 @ bass Hz ─┬─ low ─► allpass @ treble Hz ─► × bass ───┐
+//                            └─ rest ─► LR4 @ treble Hz ─┬─ mid ─► × 1 ─┼─► Σ ─► trim
+//                                                        └─ high ─► × treble
+//
+// LINKWITZ-RILEY 4th ORDER (two Butterworth 2nd-order sections in series)
+// because its low and high outputs are IN PHASE and sum to a 2nd-order
+// allpass: no bump or hole at the crossover. The low band goes through
+// that same allpass at the treble frequency so it stays in phase with the
+// mid and high bands, which have been through the second split. The
+// whole thing at unity is then (allpass @ bass) x (allpass @ treble) -
+// flat in level, whatever the two frequencies are, even crossed.
+//
+// THE FILTERS ARE TPT STATE-VARIABLE FILTERS, in double. One SVF gives
+// low-pass, high-pass and allpass from the same state, and it stays
+// stable and click-free while its frequency is swept - the frequencies
+// are automatable. Seven SVFs per channel.
+//
+// AT 0 dB / 0 dB THE OUTPUT IS THE INPUT, BIT FOR BIT. The flat sum is
+// still an allpass - right in level, shifted in phase - and this
+// project's promise is that a hit at default settings is the file's own
+// samples. So while both gains sit at exactly 0 dB the dry signal is
+// passed through untouched, and a gain leaving 0 dB crossfades to the
+// filtered path over kIsolatorSmoothingSeconds (and back). The filters
+// run all the time, so the path faded in is already settled.
+//------------------------------------------------------------------------
+
+/** Bass and treble gain: -40 to +6 dB, and THE BOTTOM IS A KILL. +6 is
+    what DJ mixers' isolators boost; a boosted bass on a kit that already
+    peaks at 0 dBFS will clip, and the trim after it is what answers that. */
+constexpr double kIsolatorMinDb     = -40.0;
+constexpr double kIsolatorMaxDb     =   6.0;
+constexpr double kIsolatorDefaultDb =   0.0;
+
+/** How close to 0 dB counts as 0 dB - see isolatorGain. Far below
+    anything audible, far above a float normalised value's rounding. */
+constexpr double kIsolatorUnitySnapDb = 1e-3;
+
+/** The two crossover frequencies, in Hz. THE RANGES DO NOT OVERLAP, so
+    neither parameter ever has to be clamped against the other - an
+    automation lane that silently moved a second parameter would disagree
+    with what is heard. (Crossed frequencies would still sum flat; the mid
+    band would just vanish.) */
+constexpr double kBassHzMin     =    50.0;
+constexpr double kBassHzMax     =   500.0;
+constexpr double kBassHzDefault =   200.0;   // a kick's body vs. the rest
+constexpr double kTrebleHzMin     =  1500.0;
+constexpr double kTrebleHzMax     = 12000.0;
+constexpr double kTrebleHzDefault =  3500.0; // a snare's body vs. hats and cymbals
+
+/** Gains, frequencies and the dry/filtered crossfade all take this long. */
+constexpr double kIsolatorSmoothingSeconds = kTrimSmoothingSeconds;
+
+/** A crossover is never set above this fraction of the session's rate,
+    where tan() in the SVF heads for infinity. Only reachable at rates far
+    below 44.1 k: 12 kHz is 0.27 of 44.1 k. */
+constexpr double kIsolatorMaxHzFraction = 0.45;
+
+/** An isolator gain in dB to the gain applied: EXACTLY ZERO at the bottom
+    of the range (the kill), exactly 1 at 0 dB. The DSP, the host text and
+    the panel's "kill" readout all ask this one function. */
+inline double isolatorGain (double db)
+{
+	if (!(db > kIsolatorMinDb))
+		return 0.0;
+	// WITHIN kIsolatorUnitySnapDb OF 0 dB IS 0 dB. The default does not
+	// survive the trip through a normalised value exactly - 0 dB on a
+	// -40..+6 range comes back as about 7e-15 dB, and a host that stores
+	// automation as float as 3e-6 dB - and anything but EXACTLY unity
+	// takes the filtered path, which is not bit-identical.
+	if (std::fabs (db) < kIsolatorUnitySnapDb)
+		return 1.0;
+	return dbToGain (std::min (kIsolatorMaxDb, db));
+}
+
+/** A LOGARITHMIC range: normalised 0..1 to a frequency, so the middle of
+    a frequency knob is the geometric middle of its range, as heard. The
+    parameter table and the controller both call these, so the host text,
+    the panel and the DSP agree. */
+inline double logRangeToPlain (double normalized, double lo, double hi)
+{
+	const double n = (normalized < 0.0) ? 0.0 : (normalized > 1.0 ? 1.0 : normalized);
+	return lo * std::pow (hi / lo, n);
+}
+
+inline double logRangeToNormalized (double plain, double lo, double hi)
+{
+	const double p = (plain < lo) ? lo : (plain > hi ? hi : plain);
+	return std::log (p / lo) / std::log (hi / lo);
+}
+
+//------------------------------------------------------------------------
+class Isolator
+{
+public:
+	Isolator ();
+
+	/** Off the audio thread. Snaps everything. */
+	void setSampleRate (double sampleRate);
+
+	/** Snap every smoother to its target and clear the filters. */
+	void reset ();
+
+	void setBassDb (double db);
+	void setTrebleDb (double db);
+	void setBassHz (double hz);
+	void setTrebleHz (double hz);
+
+	/** In place. At 0 dB / 0 dB, settled, the block is not touched. */
+	void process (float* left, float* right, int numSamples);
+
+	//--------------------------------------------------------------------
+	// For the tests
+	//--------------------------------------------------------------------
+	double bassGain () const { return mBass.value; }
+	double trebleGain () const { return mTreble.value; }
+	double bassHz () const { return std::exp2 (mBassOct.value); }
+	double trebleHz () const { return std::exp2 (mTrebleOct.value); }
+	/** 0 = dry, 1 = filtered. */
+	double mix () const { return mMix.value; }
+
+	/** TESTS ONLY: take the filtered path even at 0 dB / 0 dB, so the
+	    flatness of the band sum itself can be measured. Takes effect
+	    with a snap, like reset(). */
+	void forceFilteredForTest (bool on) { mForceFiltered = on; reset (); }
+
+private:
+	/** One TPT SVF's coefficients (k = sqrt 2: Butterworth). */
+	struct Coeffs
+	{
+		double a1 = 1.0, a2 = 0.0, a3 = 0.0;
+	};
+
+	struct SvfState
+	{
+		double ic1 = 0.0, ic2 = 0.0;
+	};
+
+	struct SvfOut
+	{
+		double lp, hp, ap;
+	};
+
+	/** A one-pole glide that ARRIVES: within kSnap of the target it is
+	    the target, so 0 dB lands on exactly 1 and a kill on exactly 0. */
+	struct Glide
+	{
+		double value = 0.0, target = 0.0;
+		void snap () { value = target; }
+		bool settled () const { return value == target; }
+		void next (double coeff, double snapWithin);
+	};
+
+	static SvfOut tick (const Coeffs& c, SvfState& s, double x);
+	Coeffs coeffsFor (double hz) const;
+	double clampHz (double hz) const;
+	void flushStates ();
+
+	double mSampleRate = 44100.0;
+	double mCoeff = 1.0;      // the glides' per-sample one-pole coefficient
+	double mMixStep = 1.0;    // the crossfade's per-sample LINEAR step
+
+	Glide mBass, mTreble;     // linear gain
+	Glide mBassOct, mTrebleOct;   // log2 of the frequency
+	Glide mMix;               // 0 dry .. 1 filtered, linear ramp
+
+	Coeffs mBassCoeffs, mTrebleCoeffs;
+
+	/** Seven SVFs per channel - see the diagram. */
+	SvfState mState[2][7];
+
+	bool mForceFiltered = false;
+};
+
+//------------------------------------------------------------------------
 class SampleDrumDsp
 {
 public:
@@ -290,6 +473,14 @@ public:
 	    then the trim. Tolerates numSamples <= 0 and null pointers. */
 	void render (float* left, float* right, int numSamples);
 
+	/** The output isolator - see Isolator. Gains in dB (the bottom of
+	    the range is a kill), frequencies in Hz. All smoothed. */
+	void setBassDb (double db)     { mIsolator.setBassDb (db); }
+	void setTrebleDb (double db)   { mIsolator.setTrebleDb (db); }
+	void setBassHz (double hz)     { mIsolator.setBassHz (hz); }
+	void setTrebleHz (double hz)   { mIsolator.setTrebleHz (hz); }
+	const Isolator& isolator () const { return mIsolator; }
+
 	/** The trim stage on its own, in place - exposed for the tests. At
 	    0 dB with the smoother settled it is bit-identical. */
 	void applyTrim (float* left, float* right, int numSamples);
@@ -359,6 +550,9 @@ private:
 	int    mFadeSamples  = 220;
 
 	Smoother mTrim;
+
+	/** Between the voices and the trim. */
+	Isolator mIsolator;
 
 	/** Per-cell level. Advanced ONCE PER BLOCK in closed form, and every
 	    voice on the cell ramps linearly from mCellGainStart to

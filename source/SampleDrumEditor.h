@@ -9,7 +9,13 @@
 //     64 - 95   [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
 //     96 - 127  [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
 //
-//     [ Output Trim ]
+//     [ Output Trim ]   [ Bass ] [ Bass Freq ] [ Treble ] [ Treble Freq ]
+//     (help text)
+//
+// THE FOUR AFTER THE TRIM ARE THE OUTPUT ISOLATOR (Isolator in
+// SampleDrumDsp.h): a gain whose bottom is "kill", and a crossover
+// frequency, for each of bass and treble. Option-click any of the five
+// sliders to put it back to its default.
 //
 // THE NOTE UNDER EACH DRUM'S NAME IS A CONTROL (SampleDrumNoteBox): the
 // column's note parameter, defaulting to the GM note.
@@ -94,9 +100,14 @@ public:
 	static constexpr int kGridWidth  = kColumns * kCellWidth + (kColumns - 1) * kCellGap;
 	static constexpr int kGridHeight = kRows * kCellHeight + (kRows - 1) * kCellGap;
 	static constexpr int kSliderTop  = kGridTop + kGridHeight + 14;
+	static constexpr int kSliderGap  = 12;      // between the isolator's sliders
+	static constexpr int kGroupGap   = 28;      // between the trim and the isolator
+	static constexpr int kIsolatorLeft = kGridLeft + kSliderWidth + kGroupGap;
+	static constexpr int kHelpTop    = kSliderTop + kSliderHeight + 8;
+	static constexpr int kHelpHeight = 14;
 
 	static constexpr int kEditorWidth  = kGridLeft + kGridWidth + kMargin;
-	static constexpr int kEditorHeight = kSliderTop + kSliderHeight + kMargin;
+	static constexpr int kEditorHeight = kHelpTop + kHelpHeight + kMargin;
 
 	/** The lamp timer. 30 ms, as Project6: fast enough that a hit reads
 	    as immediate, slow enough to cost nothing. */
@@ -131,6 +142,10 @@ private:
 	SampleDrumLevelBar* mLevels[kCellCount] = {};
 	SampleDrumNoteBox*  mNotes[kColumns] = {};
 	SpySlider* mTrim = nullptr;
+
+	/** Bass, Bass Freq, Treble, Treble Freq - in kIsolatorTags order. */
+	static constexpr Steinberg::Vst::ParamID kIsolatorTags[4] = { kBassGain, kBassFreq, kTrebleGain, kTrebleFreq };
+	SpySlider* mIsolator[4] = {};
 
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> mTimer;
 

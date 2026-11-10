@@ -45,6 +45,29 @@ public:
 	                  kRootUnitId, USTRING (def.title))
 	, mDef (def)
 	{
+		// RangeParameter's constructor worked out the default through ITS
+		// OWN toNormalized - linear, because a virtual call from a base
+		// constructor never reaches the override. For a log parameter that
+		// default is wrong; set it again now the override exists.
+		if (mDef.type == ParamType::LogFloat)
+			info.defaultNormalizedValue = valueNormalized = mDef.defaultNormalized ();
+	}
+
+	/** The LOG TAPER for a frequency. Every conversion the SDK makes -
+	    text to value (fromString), the host's plain-value calls - comes
+	    through these two, so overriding them is all it takes. */
+	ParamValue toPlain (ParamValue normalized) const SMTG_OVERRIDE
+	{
+		if (mDef.type == ParamType::LogFloat)
+			return mDef.toPlain (normalized);
+		return RangeParameter::toPlain (normalized);
+	}
+
+	ParamValue toNormalized (ParamValue plain) const SMTG_OVERRIDE
+	{
+		if (mDef.type == ParamType::LogFloat)
+			return mDef.toNormalized (plain);
+		return RangeParameter::toNormalized (plain);
 	}
 
 	void toString (ParamValue normalized, String128 string) const SMTG_OVERRIDE
@@ -67,6 +90,19 @@ public:
 			// "36 C1": the number first, so the host's default text-to-value
 			// reading (and the validator's round trip) finds it.
 			formatNote (noteFromNormalized (normalized), text, static_cast<int> (sizeof (text)));
+		}
+		else if (mDef.id == kBassFreq || mDef.id == kTrebleFreq)
+		{
+			// WHOLE HERTZ, ALWAYS - never "3.50 kHz": the default text-to-value
+			// reading takes the leading number in the parameter's units, and
+			// "3.50" would come back as 3.5 Hz. The panel says "3.5k".
+			std::snprintf (text, sizeof (text), "%.0f", mDef.toPlain (normalized));
+		}
+		else if (mDef.id == kBassGain || mDef.id == kTrebleGain)
+		{
+			// A number even at the bottom, for the cell levels' reason
+			// below; the panel says "kill".
+			std::snprintf (text, sizeof (text), "%+.1f", mDef.toPlain (normalized));
 		}
 		else if (isCellLevelParam (mDef.id))
 		{
