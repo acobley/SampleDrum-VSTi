@@ -273,4 +273,21 @@ std::string fileStemOf (const std::string& path);
 std::string wavPathFromDragText (const std::string& text);
 
 //------------------------------------------------------------------------
+// The panel's picture of a sample
+//------------------------------------------------------------------------
+
+/** How many columns a cell's waveform is drawn with. */
+constexpr int kThumbnailPoints = 96;
+
+/** A waveform as a sample editor draws it: for each of `points` equal
+    slices of the file, the lowest and highest sample on either channel,
+    as signed bytes - min0, max0, min1, max1 ... ABSOLUTE, so 127 is full
+    scale and a quiet file looks quiet, which is what its level knob is
+    for. Made by the processor from the decoded audio (the controller
+    never has it, and on another Mac only the project's embedded copy
+    exists), and sent to the panel with the cell's status. Empty for an
+    empty buffer or `points` < 1. */
+std::vector<std::int8_t> makeThumbnail (const SampleBuffer& sample, int points = kThumbnailPoints);
+
+//------------------------------------------------------------------------
 } // namespace SampleDrum

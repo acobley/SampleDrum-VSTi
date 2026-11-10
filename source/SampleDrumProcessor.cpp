@@ -248,6 +248,20 @@ void SampleDrumProcessor::writeOutput (ProcessData& data, int32 numSamples)
 		if (left[i] != 0.f || right[i] != 0.f)
 			silent = false;
 
+	// THE PANEL'S METER: the block's peak, held until the panel takes it.
+	if (!silent)
+	{
+		const float* const channels[2] = { left, right };
+		for (int ch = 0; ch < 2; ++ch)
+		{
+			float peak = 0.f;
+			for (int32 i = 0; i < numSamples; ++i)
+				peak = std::max (peak, std::fabs (channels[ch][i]));
+			if (peak > mPeak[ch].load (std::memory_order_relaxed))
+				mPeak[ch].store (peak, std::memory_order_relaxed);
+		}
+	}
+
 	if (data.symbolicSampleSize == kSample64)
 	{
 		double** out = data.outputs[0].channelBuffers64;
@@ -410,6 +424,8 @@ void SampleDrumProcessor::loadCell (int cell)
 	// the project goes on remembering it - the file may be on a drive
 	// that is not plugged in today. It plays nothing, and says why.
 	mStatus[cell] = status;
+	mThumbnails[cell] = sample ? makeThumbnail (*sample) : std::vector<std::int8_t> ();
+	mSeconds[cell] = sample ? sample->seconds () : 0.0;
 	publishCell (cell, std::move (sample));
 	sendCellStatus (cell);
 }
@@ -469,6 +485,12 @@ void SampleDrumProcessor::sendCellStatus (int cell)
 		if (!mPaths[cell].empty ())
 			message->getAttributes ()->setBinary (kSampleDrumCellPathAttribute, mPaths[cell].data (),
 			                                      static_cast<uint32> (mPaths[cell].size ()));
+		if (!mThumbnails[cell].empty ())
+		{
+			message->getAttributes ()->setBinary (kSampleDrumThumbnailAttribute, mThumbnails[cell].data (),
+			                                      static_cast<uint32> (mThumbnails[cell].size ()));
+			message->getAttributes ()->setFloat (kSampleDrumSecondsAttribute, mSeconds[cell]);
+		}
 		sendMessage (message);
 	}
 }
@@ -502,6 +524,14 @@ void SampleDrumProcessor::sendActivity ()
 		                                    static_cast<uint32> (sizeof (hits)));
 		reply->getAttributes ()->setBinary (kSampleDrumSoundingAttribute, sounding,
 		                                    static_cast<uint32> (sizeof (sounding)));
+
+		const float peak[2] = { mPeak[0].exchange (0.f, std::memory_order_relaxed),
+		                        mPeak[1].exchange (0.f, std::memory_order_relaxed) };
+		reply->getAttributes ()->setBinary (kSampleDrumPeakAttribute, peak,
+		                                    static_cast<uint32> (sizeof (peak)));
+		reply->getAttributes ()->setInt (kSampleDrumVoicesAttribute, mDsp.voicesSounding ());
+		reply->getAttributes ()->setInt (kSampleDrumLastHitAttribute, static_cast<int64> (mDsp.lastHit ()));
+		reply->getAttributes ()->setFloat (kSampleDrumRateAttribute, mSampleRate);
 		sendMessage (reply);
 	}
 }

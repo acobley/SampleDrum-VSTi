@@ -308,6 +308,55 @@ inline double logRangeToNormalized (double plain, double lo, double hi)
 }
 
 //------------------------------------------------------------------------
+/** THE ISOLATOR'S RESPONSE, for the panel's screen: the magnitude in dB at
+    `hz` of the whole three-band network with these settings - the same
+    LR4 splits, the same allpass on the low band and the same kill test
+    (isolatorGain) as Isolator, worked out in the frequency domain rather
+    than measured. At 0 dB / 0 dB it is 0 dB everywhere, as the DSP is.
+    A killed sum reads as kIsolatorResponseFloorDb, not minus infinity. */
+constexpr double kIsolatorResponseFloorDb = -120.0;
+double isolatorResponseDb (double hz, double bassDb, double bassHz, double trebleDb, double trebleHz);
+
+//------------------------------------------------------------------------
+/** The last cell struck, packed into one atomic word so the panel can read
+    it whole: which cell, at what velocity (0 = an audition from the
+    panel), and a sequence number that moves on every hit - so the same
+    cell hit twice is still news. See SampleDrumDsp::lastHit. */
+struct LastHit
+{
+	int cell = -1;            // -1: nothing struck yet
+	int velocity = 0;         // 1..127, 0 for an audition
+	std::uint32_t sequence = 0;
+};
+
+inline std::uint32_t encodeLastHit (int cell, int velocity127, std::uint32_t sequence)
+{
+	return ((sequence & 0xffffu) << 16)
+	     | (static_cast<std::uint32_t> (velocity127 & 0x7f) << 8)
+	     | (static_cast<std::uint32_t> (cell + 1) & 0xffu);
+}
+
+inline LastHit decodeLastHit (std::uint32_t word)
+{
+	LastHit hit;
+	hit.cell = static_cast<int> (word & 0xffu) - 1;
+	hit.velocity = static_cast<int> ((word >> 8) & 0x7fu);
+	hit.sequence = word >> 16;
+	if (!isCellIndex (hit.cell))
+		hit = LastHit ();
+	return hit;
+}
+
+/** The rest of an activity reply, as the editor receives it. */
+struct OutputActivity
+{
+	float peak[2] = { 0.f, 0.f };   // linear, since the last reply
+	int voices = 0;
+	std::uint32_t lastHit = 0;       // encodeLastHit
+	double sampleRate = 0.0;         // 0: not reported
+};
+
+//------------------------------------------------------------------------
 class Isolator
 {
 public:
@@ -502,6 +551,15 @@ public:
 
 	int activeVoices () const;
 
+	/** How many voices were making a sound at the end of the last block -
+	    the header's voice meter. Unlike activeVoices() this is an atomic
+	    the UI thread may read. */
+	int voicesSounding () const;
+
+	/** The last cell a voice STARTED on, encoded - see LastHit. Written by
+	    the audio thread, read whole by the UI thread. 0 until the first. */
+	std::uint32_t lastHit () const;
+
 	/** Which cell the kit's rules would play for this note and velocity
 	    RIGHT NOW in the LEFTMOST column with that note, or -1. The same
 	    rules noteOn uses, exposed so the tests assert the rule rather
@@ -535,10 +593,12 @@ private:
 		int offset = 0;
 		int cell   = -1;
 		int column = -1;
+		int velocity = 0;    // 1..127, 0 for an audition
 	};
 
-	void startVoice (int cell, int column);
-	void queueHit (int offset, int cell, int column);
+	/** False when nothing started (the cell was emptied meanwhile). */
+	bool startVoice (int cell, int column);
+	void queueHit (int offset, int cell, int column, int velocity127 = 0);
 	void beginFade (Voice& voice, int samples);
 	void renderVoices (float* left, float* right, int from, int to);
 	void advanceCellGains (int numSamples);
@@ -591,6 +651,10 @@ private:
 
 	std::atomic<std::uint32_t> mHits[kCellCount];
 	std::atomic<bool>          mSounding[kCellCount];
+
+	std::atomic<int>           mVoicesSounding { 0 };
+	std::atomic<std::uint32_t> mLastHit { 0u };
+	std::uint32_t              mHitSequence = 0;   // audio thread only
 };
 
 //------------------------------------------------------------------------

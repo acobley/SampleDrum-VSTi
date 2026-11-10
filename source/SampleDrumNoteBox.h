@@ -20,9 +20,10 @@
 //
 // SHARED NOTES ARE SHOWN, not refused: two columns on one note both play
 // (layering), which is sometimes the point and sometimes a mistake. The
-// box's number turns amber so the mistake is visible at a glance.
+// box's number turns red so the mistake is visible at a glance.
 //
-// No bitmaps, like every control here.
+// Drawn in the Polivoks style (amber lettering behind glass); the box's
+// bezel is printed on the panel bitmap.
 //------------------------------------------------------------------------
 
 #pragma once
@@ -43,7 +44,7 @@ public:
 	/** The note currently shown - noteFromNormalized of the value. */
 	int note () const;
 
-	/** Another column is on the same note: draw the number amber. */
+	/** Another column is on the same note: draw the number red. */
 	void setShared (bool shared);
 
 	void draw (VSTGUI::CDrawContext* context) override;

@@ -10,6 +10,7 @@
 #include "SampleDrumDsp.h"
 
 #include <algorithm>
+#include <complex>
 #include <cmath>
 
 namespace SampleDrum {
@@ -370,6 +371,7 @@ void SampleDrumDsp::reset ()
 
 	for (auto& sounding : mSounding)
 		sounding.store (false, std::memory_order_relaxed);
+	mVoicesSounding.store (0, std::memory_order_relaxed);
 
 	// The isolator's glides snap and its filters empty, for the trim's
 	// reason, and so nothing of the old project's tail rings into the new.
@@ -552,12 +554,12 @@ void SampleDrumDsp::noteOn (int note, float velocity01, int sampleOffset)
 			continue;
 		const int cell = chooseCell (column, row, loaded);
 		if (cell >= 0)
-			queueHit (sampleOffset, cell, column);
+			queueHit (sampleOffset, cell, column, velocityTo127 (velocity01));
 	}
 }
 
 //------------------------------------------------------------------------
-void SampleDrumDsp::queueHit (int sampleOffset, int cell, int column)
+void SampleDrumDsp::queueHit (int sampleOffset, int cell, int column, int velocity127)
 {
 	if (mPendingCount >= kMaxEventsPerBlock)
 		return;   // a flood: drop it rather than allocate
@@ -571,7 +573,7 @@ void SampleDrumDsp::queueHit (int sampleOffset, int cell, int column)
 		mPending[at] = mPending[at - 1];
 		--at;
 	}
-	mPending[at] = { std::max (0, sampleOffset), cell, column };
+	mPending[at] = { std::max (0, sampleOffset), cell, column, velocity127 };
 	++mPendingCount;
 }
 
@@ -584,16 +586,16 @@ void SampleDrumDsp::auditionCell (int cell)
 	// Offset 0 sorts to the front of anything already queued.
 	for (int i = mPendingCount; i > 0; --i)
 		mPending[i] = mPending[i - 1];
-	mPending[0] = { 0, cell, columnOfCell (cell) };
+	mPending[0] = { 0, cell, columnOfCell (cell), 0 };
 	++mPendingCount;
 }
 
 //------------------------------------------------------------------------
-void SampleDrumDsp::startVoice (int cell, int column)
+bool SampleDrumDsp::startVoice (int cell, int column)
 {
 	const SampleBuffer* sample = mCells[cell].load (std::memory_order_acquire);
 	if (sample == nullptr)
-		return;   // emptied between the note and the block
+		return false;   // emptied between the note and the block
 
 	constexpr int kPool = kMaxVoices + kSpareVoices;
 	static_assert (sizeof (mVoices) / sizeof (mVoices[0]) >= kPool,
@@ -657,6 +659,7 @@ void SampleDrumDsp::startVoice (int cell, int column)
 	*slot = voice;
 
 	mHits[cell].fetch_add (1u, std::memory_order_relaxed);
+	return true;
 }
 
 //------------------------------------------------------------------------
@@ -773,7 +776,9 @@ void SampleDrumDsp::render (float* left, float* right, int numSamples)
 		const int at = std::min (hit.offset, numSamples - 1);
 		renderVoices (left, right, cursor, at);
 		cursor = std::max (cursor, at);
-		startVoice (hit.cell, hit.column);
+		if (startVoice (hit.cell, hit.column))
+			mLastHit.store (encodeLastHit (hit.cell, hit.velocity, ++mHitSequence),
+			                std::memory_order_relaxed);
 	}
 	mPendingCount = 0;
 
@@ -782,9 +787,14 @@ void SampleDrumDsp::render (float* left, float* right, int numSamples)
 	// What the panel's lamps read. A voice that is fading still counts:
 	// it is still making a sound.
 	bool sounding[kCellCount] = {};
+	int voices = 0;
 	for (const Voice& voice : mVoices)
 		if (voice.active ())
+		{
 			sounding[voice.cell] = true;
+			++voices;
+		}
+	mVoicesSounding.store (voices, std::memory_order_relaxed);
 	for (int cell = 0; cell < kCellCount; ++cell)
 		mSounding[cell].store (sounding[cell], std::memory_order_relaxed);
 
@@ -820,6 +830,46 @@ std::uint32_t SampleDrumDsp::cellHits (int cell) const
 bool SampleDrumDsp::cellSounding (int cell) const
 {
 	return isCellIndex (cell) && mSounding[cell].load (std::memory_order_relaxed);
+}
+
+//------------------------------------------------------------------------
+int SampleDrumDsp::voicesSounding () const
+{
+	return mVoicesSounding.load (std::memory_order_relaxed);
+}
+
+//------------------------------------------------------------------------
+std::uint32_t SampleDrumDsp::lastHit () const
+{
+	return mLastHit.load (std::memory_order_relaxed);
+}
+
+//------------------------------------------------------------------------
+double isolatorResponseDb (double hz, double bassDb, double bassHz, double trebleDb, double trebleHz)
+{
+	using C = std::complex<double>;
+	if (!(hz > 0.0) || !(bassHz > 0.0) || !(trebleHz > 0.0))
+		return 0.0;
+
+	// One Butterworth section at fc, as the SVF's LP and HP; LR4 is two in
+	// series, and an LR4 pair's sum is the allpass Isolator puts on the low
+	// band so it stays in phase with the other two.
+	const auto lr4 = [hz] (double fc, C& lp, C& hp)
+	{
+		const C s (0.0, hz / fc);
+		const C d = s * s + std::sqrt (2.0) * s + 1.0;
+		lp = (1.0 / d) * (1.0 / d);
+		hp = (s * s / d) * (s * s / d);
+	};
+	C lpB, hpB, lpT, hpT;
+	lr4 (bassHz, lpB, hpB);
+	lr4 (trebleHz, lpT, hpT);
+
+	const double gb = isolatorGain (bassDb), gt = isolatorGain (trebleDb);
+	const C total = gb * lpB * (lpT + hpT) + hpB * (lpT + gt * hpT);
+	const double mag = std::abs (total);
+	const double floorMag = std::pow (10.0, kIsolatorResponseFloorDb / 20.0);
+	return 20.0 * std::log10 (std::max (mag, floorMag));
 }
 
 //------------------------------------------------------------------------

@@ -1,50 +1,67 @@
 //------------------------------------------------------------------------
-// SampleDrum - the panel
+// SampleDrum - the panel: the Polivoks black panel, design 2
 //
-//     SampleDrum
-//                Kick   Snare  Clap  Closed HH  Open HH  Low Tom  High Tom  Crash
-//                 36     38     39      42        46       45       50       49
-//     1 - 31    [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
-//     32 - 63   [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
-//     64 - 95   [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
-//     96 - 127  [    ] [    ] [    ]  [    ]    [    ]   [    ]   [    ]   [    ]
+//     Designs/SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png, 1200 x 640
 //
-//     [ Output Trim ]   [ Bass ] [ Bass Freq ] [ Treble ] [ Treble Freq ]
-//     (help text)
+//     SAMPLE DRUM | 48000 HZ / 32 VOICES / 29 OF 32 CELLS        VOICES [.....]
+//     +------+ +------+          ... eight strips ...   +--------------------+
+//     | KICK | | SNARE|                                  | MASTER             |
+//     |<36 C1>                                           | [ last hit       ] |
+//     | [ 1-31  ] cell, level knob                        | ISOLATOR           |
+//     | [ 32-63 ]                                         | [ response       ] |
+//     | [ 64-95 ]                                         |  BASS     TREBLE   |
+//     | [ 96-127]                                         | trim      [meter]  |
+//     |  o HIT                                            | o OVER  HAT CHOKE  |
+//     +------+                                            | o BYPASS           |
 //
-// THE FOUR AFTER THE TRIM ARE THE OUTPUT ISOLATOR (Isolator in
-// SampleDrumDsp.h): a gain whose bottom is "kill", and a crossover
-// frequency, for each of bass and treble. Option-click any of the five
-// sliders to put it back to its default.
+// HOW IT IS BUILT - ForTran's Polivoks method (ForTran-VSTi/README.md):
+// everything that never changes (boxes, titles, legends, printed knob
+// scales, the OLED bezels, the band in each cell's corner, the wordmark) is
+// ONE BITMAP, resource/pv_panel.png, rendered at 2x from the mock-up in
+// tools/polivoks/d2p.js. The wear is a second, transparent bitmap,
+// resource/pv_wear.png, laid over everything. Everything that MOVES is drawn
+// by the views below, with paths and the 70s sci-fi lettering, AT THE
+// COORDINATES d2p.js USES. Move something in one, move it in the other, and
+// run tools/polivoks/make-panel.sh.
 //
-// THE NOTE UNDER EACH DRUM'S NAME IS A CONTROL (SampleDrumNoteBox): the
-// column's note parameter, defaulting to the GM note.
+// A COLUMN IS A STRIP: the drum's name (printed), its note box (a control,
+// SampleDrumNoteBox), its four velocity cells soft to hard
+// (SampleDrumCellView - drop, click, drag, right-click as before), a level
+// KNOB under each cell (the cell's level parameter, the bar's replacement)
+// with its value beside it, and a HIT lamp that lights when any cell in the
+// column is struck.
 //
-// EVERY LABEL IS COMPUTED, not typed: the column names come from kDrumMap,
-// the notes from formatNote, and the row bands from bandLow/bandHigh in
-// SampleDrumKit.h -
-// the same functions the DSP uses to decide what plays. A panel that
-// printed its own "96-127" while the DSP split somewhere else would be
-// lying, and this is the arrangement that makes that impossible.
+// THE MASTER STRIP: the last cell struck (waveform, playhead, drum, band,
+// file, velocity), the OUTPUT ISOLATOR (its response, and Bass, Bass Freq,
+// Treble, Treble Freq as knobs), OUTPUT TRIM, a peak meter with an OVER
+// lamp, and BYPASS - the one lamp that is a switch.
 //
-// THE LAMPS ARE PULLED, not pushed. A timer asks the processor, through
-// the controller, for every cell's hit count and sounding flag; see
-// SampleDrumIDs.h for why that is a request and a reply rather than 32
-// parameters or a message from process().
+// EVERY LABEL THE DSP DECIDES IS COMPUTED, not typed: the notes from
+// formatNote, the bands from bandLow/bandHigh, the fallback each empty cell
+// shows from chooseCell, the isolator's curve from isolatorResponseDb, the
+// "kill" and "off" readings from isolatorGain and cellLevelGain. The panel
+// cannot say one thing while the audio does another.
+//
+// THE LAMPS AND THE METER ARE PULLED, not pushed. A timer asks the
+// processor, through the controller, for every cell's hit count and
+// sounding flag, the output's peaks, the voice count and the last hit; see
+// SampleDrumIDs.h for why that is a request and a reply.
 //------------------------------------------------------------------------
 
 #pragma once
 
 #include "SampleDrumCellView.h"
-#include "SampleDrumControls.h"
-#include "SampleDrumLevelBar.h"
-#include "SampleDrumNoteBox.h"
+#include "SampleDrumDsp.h"
 #include "SampleDrumKit.h"
+#include "SampleDrumNoteBox.h"
 #include "SampleDrumParams.h"
+#include "SampleDrumPvViews.h"
 
 #include "public.sdk/source/vst/vstguieditor.h"
 
+#include <chrono>
 #include <cstdint>
+#include <string>
 
 namespace SampleDrum {
 
@@ -72,45 +89,37 @@ public:
 	/** A parameter moved - from the host, automation or another window. */
 	void updateControl (Steinberg::Vst::ParamID tag, Steinberg::Vst::ParamValue normalized);
 
-	/** A cell's file or status changed. Reads both from the controller. */
+	/** A cell's file, status or waveform changed. Reads them from the controller. */
 	void refreshCell (int cell);
 
 	/** The processor's answer to the timer's question. */
-	void setActivity (const std::uint32_t* hits, const std::uint8_t* sounding);
+	void setActivity (const std::uint32_t* hits, const std::uint8_t* sounding, const OutputActivity& output);
 
 	//--------------------------------------------------------------------
-	// Layout - every number the panel is built from, in one place
+	// Layout - d2p.js's numbers, in one place
 	//--------------------------------------------------------------------
-	static constexpr int kMargin      = 12;
-	static constexpr int kTitleHeight = 22;
-	static constexpr int kRowLabelWidth = 76;
-	static constexpr int kCellWidth   = 100;
-	static constexpr int kCellHeight  = 58;     // well + gap + level bar
-	static constexpr int kLevelHeight = 10;     // the bar under each cell
-	static constexpr int kLevelGap    = 2;
-	static constexpr int kWellHeight  = kCellHeight - kLevelGap - kLevelHeight;
-	static constexpr int kCellGap     = 6;
-	static constexpr int kHeaderHeight = 34;
-	static constexpr int kSliderWidth  = 96;    // SpySlider's own size, as in Project6
-	static constexpr int kSliderHeight = 27;
+	static constexpr int kEditorWidth  = 1200;
+	static constexpr int kEditorHeight = 640;
 
-	static constexpr int kGridLeft = kMargin + kRowLabelWidth;
-	static constexpr int kHeaderTop = kMargin + kTitleHeight + 6;
-	static constexpr int kGridTop  = kHeaderTop + kHeaderHeight;
-	static constexpr int kGridWidth  = kColumns * kCellWidth + (kColumns - 1) * kCellGap;
-	static constexpr int kGridHeight = kRows * kCellHeight + (kRows - 1) * kCellGap;
-	static constexpr int kSliderTop  = kGridTop + kGridHeight + 14;
-	static constexpr int kSliderGap  = 12;      // between the isolator's sliders
-	static constexpr int kGroupGap   = 28;      // between the trim and the isolator
-	static constexpr int kIsolatorLeft = kGridLeft + kSliderWidth + kGroupGap;
-	static constexpr int kHelpTop    = kSliderTop + kSliderHeight + 8;
-	static constexpr int kHelpHeight = 14;
+	static constexpr double kStripLeft   = 16.;    // SX(c) = 16 + c * 118
+	static constexpr double kStripPitch  = 118.;
+	static constexpr double kStripWidth  = 110.;
+	static constexpr double kCellTop     = 146.;   // RY(r) = 146 + r * 112
+	static constexpr double kCellPitch   = 112.;
+	static constexpr double kCellInset   = 8.;     // screen left = strip + 8
+	static constexpr double kCellWidth   = 94.;    // OW
+	static constexpr double kCellHeight  = 62.;    // OH
+	static constexpr double kNoteTop     = 114.;
+	static constexpr double kNoteWidth   = 92.;
+	static constexpr double kNoteHeight  = 18.;
+	static constexpr double kLevelOuter  = 12.;    // knob (ox + 14, y + OH + 22)
+	static constexpr double kHitLampY    = 604.;   // lamp (x + 22, 604)
 
-	static constexpr int kEditorWidth  = kGridLeft + kGridWidth + kMargin;
-	static constexpr int kEditorHeight = kHelpTop + kHelpHeight + kMargin;
+	static double stripX (int column) { return kStripLeft + column * kStripPitch; }
+	/** The cell's SCREEN (the view is kGlowMargin bigger). */
+	static VSTGUI::CRect cellScreen (int column, int row);
 
-	/** The lamp timer. 30 ms, as Project6: fast enough that a hit reads
-	    as immediate, slow enough to cost nothing. */
+	/** The lamp timer. 30 ms, as before. */
 	static constexpr int kTimerMs = 30;
 
 	/** How much a struck cell's flash fades per tick: from full to out in
@@ -120,32 +129,57 @@ public:
 	/** The lamp's level while a cell is still sounding after its flash. */
 	static constexpr float kSoundingLamp = 0.45f;
 
-private:
-	/** The whole cell - well AND bar. */
-	VSTGUI::CRect cellRect (int column, int row) const;
-	VSTGUI::CRect wellRect (int column, int row) const;
-	VSTGUI::CRect levelRect (int column, int row) const;
+	/** Meter ballistics: the bar falls this fast; the peak tick holds this
+	    long, then falls at the same rate; OVER stays lit this long. */
+	static constexpr double kMeterFallDbPerSecond = 26.;
+	static constexpr double kPeakHoldSeconds = 1.5;
+	static constexpr double kOverHoldSeconds = 1.5;
 
-	/** While a level bar is moving, its cell reads out the level. */
-	void showLevelOverlay (Steinberg::Vst::ParamID tag, double normalized);
+private:
+	using Clock = std::chrono::steady_clock;
+
+	double now () const;
+
+	/** One knob on a parameter, with its value printed at (vx, vy). */
+	PvKnob* addKnob (Steinberg::Vst::ParamID tag, double cx, double cy, double outer);
+	PvText* addValue (double x, double y, double size, SciFi::Align align);
+
+	void refreshValue (Steinberg::Vst::ParamID tag, double normalized);
+	void refreshIsolatorScreen ();
+	void refreshFallbacks ();
+	void refreshHeader ();
+	void refreshLastHit ();
 
 	/** Mark every note box whose note another column shares. */
 	void refreshSharedNotes ();
-	void clearLevelOverlay (Steinberg::Vst::ParamID tag);
 	void onTimer ();
-	void addLabel (const VSTGUI::CRect& rect, const std::string& text,
-	               const VSTGUI::CColor& colour, VSTGUI::CHoriTxtAlign align);
+
+	double paramNormalized (Steinberg::Vst::ParamID tag) const;
 
 	SampleDrumController* mController = nullptr;
 
+	VSTGUI::SharedPointer<VSTGUI::CBitmap> mPanelBitmap, mWearBitmap;
+
 	SampleDrumCellView* mCells[kCellCount] = {};
-	SampleDrumLevelBar* mLevels[kCellCount] = {};
+	PvKnob*             mLevels[kCellCount] = {};
+	PvText*             mLevelText[kCellCount] = {};
 	SampleDrumNoteBox*  mNotes[kColumns] = {};
-	SpySlider* mTrim = nullptr;
+	PvLamp*             mHitLamps[kColumns] = {};
 
 	/** Bass, Bass Freq, Treble, Treble Freq - in kIsolatorTags order. */
 	static constexpr Steinberg::Vst::ParamID kIsolatorTags[4] = { kBassGain, kBassFreq, kTrebleGain, kTrebleFreq };
-	SpySlider* mIsolator[4] = {};
+	PvKnob* mIsolator[4] = {};
+	PvText* mIsolatorText[4] = {};
+	PvKnob* mTrim = nullptr;
+	PvText* mTrimText = nullptr;
+	PvLamp* mBypass = nullptr;
+	PvLamp* mOver = nullptr;
+
+	PvText*         mEngine = nullptr;
+	PvVoiceMeter*   mVoiceMeter = nullptr;
+	PvLastHitOled*  mLastHitScreen = nullptr;
+	PvIsolatorOled* mIsolatorScreen = nullptr;
+	PvOutputMeter*  mMeter = nullptr;
 
 	VSTGUI::SharedPointer<VSTGUI::CVSTGUITimer> mTimer;
 
@@ -154,6 +188,22 @@ private:
 	bool mHaveHits = false;
 	float mFlash[kCellCount] = {};
 	bool mSounding[kCellCount] = {};
+	/** When each cell was last struck, for its playhead. */
+	double mHitAt[kCellCount] = {};
+
+	std::uint32_t mLastHitWord = 0;
+	double mSampleRate = 0.;
+	int mVoices = 0;
+
+	/** Peaks received since the last tick (linear), and the meter's state. */
+	float mPendingPeak[2] = {};
+	double mMeterDb[2] = { -100., -100. };
+	double mHoldDb[2] = { -100., -100. };
+	double mHoldAge[2] = {};
+	double mOverUntil = -1.;
+	double mLastTick = -1.;
+
+	Clock::time_point mEpoch = Clock::now ();
 };
 
 //------------------------------------------------------------------------

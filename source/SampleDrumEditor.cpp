@@ -5,9 +5,10 @@
 #include "SampleDrumEditor.h"
 
 #include "SampleDrumController.h"
-#include "SampleDrumDsp.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -17,32 +18,66 @@ using namespace Steinberg::Vst;
 
 namespace SampleDrum {
 
-using namespace Colours;
-
 namespace {
 
-/** Behind everything, so a failed draw reads as a dark panel rather than
-    whatever the host left in the window. Project6's panel colour. */
-const CColor kPanel (64, 64, 64, 255);
+/** The voice meter's colours in this design (d2p.js header: vcol, voff). */
+const CColor kVoiceOn  (0xff, 0xae, 0x2e, 0xff);
+const CColor kVoiceOff (0x2a, 0x1f, 0x0e, 0xff);
 
-/** The isolator sliders' readouts. From the parameter table and the DSP's
-    own kill test, so the panel cannot say "kill" while sound comes out. */
-std::string formatIsolator (ParamID tag, float normalized)
+std::string upper (std::string s)
+{
+	for (auto& ch : s)
+		ch = static_cast<char> (std::toupper (static_cast<unsigned char> (ch)));
+	return s;
+}
+
+/** "-6.0 DB", "0.0 DB", "+1.5 DB" - and "OFF" at the bottom of a cell's
+    level, from the DSP's own silence test. */
+std::string formatDb (double db, bool offAtBottom)
+{
+	if (offAtBottom && cellLevelGain (db) <= 0.0)
+		return "OFF";
+	char text[32] = {};
+	if (std::fabs (db) < 0.05)
+		std::snprintf (text, sizeof (text), "0.0 DB");
+	else
+		std::snprintf (text, sizeof (text), "%+.1f DB", db);
+	return text;
+}
+
+/** The isolator's readouts. From the parameter table and the DSP's own
+    kill test, so the panel cannot say "KILL" while sound comes out. */
+std::string formatIsolator (ParamID tag, double normalized)
 {
 	const double plain = paramDef (tag).toPlain (normalized);
 	char text[32] = {};
 	if (tag == kBassGain || tag == kTrebleGain)
 	{
 		if (isolatorGain (plain) <= 0.0)
-			std::snprintf (text, sizeof (text), "kill");
-		else
-			std::snprintf (text, sizeof (text), "%+.1f dB", plain);
+			return "KILL";
+		return formatDb (plain, false);
 	}
-	else if (plain >= 1000.0)
-		std::snprintf (text, sizeof (text), "%.2f kHz", plain / 1000.0);
+	if (plain >= 1000.0)
+		std::snprintf (text, sizeof (text), "%.2f KHZ", plain / 1000.0);
 	else
-		std::snprintf (text, sizeof (text), "%.0f Hz", plain);
-	return std::string (text);
+		std::snprintf (text, sizeof (text), "%.0f HZ", plain);
+	return text;
+}
+
+/** The panel's bitmaps are drawn at 2x, so they are sharp on a Retina
+    screen; declaring the scale makes VSTGUI draw them at 1200 x 640.
+    (ForTranEditor::bitmap2x.) */
+CBitmap* bitmap2x (const char* name)
+{
+	auto* bmp = new CBitmap (CResourceDescription (name));
+	if (auto pb = bmp->getPlatformBitmap ())
+		pb->setScaleFactor (2.);
+	return bmp;
+}
+
+double toDb (float linear)
+{
+	return (linear > 1e-6f) ? 20.0 * std::log10 (static_cast<double> (linear)) : -120.0;
 }
 
 } // namespace
@@ -57,53 +92,129 @@ SampleDrumEditor::SampleDrumEditor (SampleDrumController* controller)
 }
 
 //------------------------------------------------------------------------
-CRect SampleDrumEditor::cellRect (int column, int row) const
+CRect SampleDrumEditor::cellScreen (int column, int row)
 {
-	const CCoord x = kGridLeft + column * (kCellWidth + kCellGap);
-	const CCoord y = kGridTop + row * (kCellHeight + kCellGap);
+	const double x = stripX (column) + kCellInset, y = kCellTop + row * kCellPitch;
 	return CRect (x, y, x + kCellWidth, y + kCellHeight);
 }
 
 //------------------------------------------------------------------------
-CRect SampleDrumEditor::wellRect (int column, int row) const
+double SampleDrumEditor::now () const
 {
-	CRect r = cellRect (column, row);
-	r.bottom = r.top + kWellHeight;
-	return r;
+	return std::chrono::duration<double> (Clock::now () - mEpoch).count ();
 }
 
 //------------------------------------------------------------------------
-CRect SampleDrumEditor::levelRect (int column, int row) const
+double SampleDrumEditor::paramNormalized (ParamID tag) const
 {
-	CRect r = cellRect (column, row);
-	r.top = r.bottom - kLevelHeight;
-	return r;
+	return mController ? mController->getParamNormalized (tag) : 0.0;
 }
 
 //------------------------------------------------------------------------
-void SampleDrumEditor::showLevelOverlay (ParamID tag, double normalized)
+PvKnob* SampleDrumEditor::addKnob (ParamID tag, double cx, double cy, double outer)
 {
+	auto* knob = new PvKnob (CPoint (cx, cy), outer, this, static_cast<int32_t> (tag));
+	knob->setValueNormalized (static_cast<float> (paramNormalized (tag)));
+	if (isTableParam (tag))
+	{
+		knob->setDefaultValue (static_cast<float> (paramDef (tag).defaultNormalized ()));
+		knob->setTooltipText (paramDef (tag).title);
+	}
+	frame->addView (knob);
+	return knob;
+}
+
+//------------------------------------------------------------------------
+PvText* SampleDrumEditor::addValue (double x, double y, double size, SciFi::Align align)
+{
+	auto* text = new PvText (CPoint (x, y), size, false, align, Pv::kInk, 90.);
+	frame->addView (text);
+	return text;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::refreshValue (ParamID tag, double normalized)
+{
+	if (tag == kOutputTrim && mTrimText)
+		mTrimText->setText (formatDb (paramDef (tag).toPlain (normalized), false));
+
+	for (int i = 0; i < 4; ++i)
+		if (tag == kIsolatorTags[i] && mIsolatorText[i])
+		{
+			mIsolatorText[i]->setText (formatIsolator (tag, normalized));
+			refreshIsolatorScreen ();
+		}
+
 	const int cell = cellOfLevelParam (tag);
-	if (!isCellIndex (cell) || mCells[cell] == nullptr)
+	if (isCellIndex (cell) && mLevelText[cell])
+		mLevelText[cell]->setText (formatDb (paramDef (tag).toPlain (normalized), true));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::refreshIsolatorScreen ()
+{
+	if (mIsolatorScreen == nullptr)
+		return;
+	const auto plain = [this] (ParamID tag) { return paramDef (tag).toPlain (paramNormalized (tag)); };
+	mIsolatorScreen->setIsolator (plain (kBassGain), plain (kBassFreq), plain (kTrebleGain), plain (kTrebleFreq));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::refreshFallbacks ()
+{
+	if (mController == nullptr)
 		return;
 
-	// From the parameter's own table and the DSP's own silence test, so
-	// the cell, the host and the audio cannot disagree about the setting.
-	const double db = paramDef (tag).toPlain (normalized);
-	char text[32] = {};
-	if (cellLevelGain (db) <= 0.0)
-		std::snprintf (text, sizeof (text), "off");
-	else
-		std::snprintf (text, sizeof (text), "%+.1f dB", db);
-	mCells[cell]->setOverlay (text);
+	// The same mask the DSP builds: a cell counts only if it will play.
+	unsigned int loaded = 0;
+	for (int cell = 0; cell < kCellCount; ++cell)
+		if (!mController->cellPath (cell).empty () && mController->cellStatus (cell) == SampleStatus::Loaded)
+			loaded |= 1u << cell;
+
+	for (int cell = 0; cell < kCellCount; ++cell)
+		if (mCells[cell])
+		{
+			const int plays = chooseCell (columnOfCell (cell), rowOfCell (cell), loaded);
+			mCells[cell]->setFallback (plays >= 0 && plays != cell ? rowOfCell (plays) : -1);
+		}
 }
 
 //------------------------------------------------------------------------
-void SampleDrumEditor::clearLevelOverlay (ParamID tag)
+void SampleDrumEditor::refreshHeader ()
 {
-	const int cell = cellOfLevelParam (tag);
-	if (isCellIndex (cell) && mCells[cell])
-		mCells[cell]->setOverlay (std::string ());
+	if (mEngine == nullptr)
+		return;
+	int loaded = 0;
+	if (mController)
+		for (int cell = 0; cell < kCellCount; ++cell)
+			if (!mController->cellPath (cell).empty () && mController->cellStatus (cell) == SampleStatus::Loaded)
+				++loaded;
+
+	char text[96] = {};
+	if (mSampleRate > 0.)
+		std::snprintf (text, sizeof (text), "%.0f HZ  /  %d VOICES  /  %d OF %d CELLS",
+		               mSampleRate, kMaxVoices, loaded, kCellCount);
+	else
+		std::snprintf (text, sizeof (text), "%d VOICES  /  %d OF %d CELLS", kMaxVoices, loaded, kCellCount);
+	mEngine->setText (text);
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::refreshLastHit ()
+{
+	if (mLastHitScreen == nullptr || mController == nullptr)
+		return;
+	const LastHit hit = decodeLastHit (mLastHitWord);
+	if (!isCellIndex (hit.cell))
+	{
+		mLastHitScreen->setHit ("", "", "", 0, 0., {});
+		return;
+	}
+	const int column = columnOfCell (hit.cell), row = rowOfCell (hit.cell);
+	char band[16];
+	std::snprintf (band, sizeof (band), "%d-%d", bandLow (row), bandHigh (row));
+	mLastHitScreen->setHit (upper (kDrumMap[column].name), band, upper (fileStemOf (mController->cellPath (hit.cell))),
+	                        hit.velocity, mController->cellSeconds (hit.cell), mController->cellThumbnail (hit.cell));
 }
 
 //------------------------------------------------------------------------
@@ -121,68 +232,46 @@ void SampleDrumEditor::refreshSharedNotes ()
 }
 
 //------------------------------------------------------------------------
-void SampleDrumEditor::addLabel (const CRect& rect, const std::string& text,
-                                 const CColor& colour, CHoriTxtAlign align)
-{
-	auto* label = new CTextLabel (rect, text.c_str (), nullptr, CParamDisplay::kNoFrame);
-	label->setFont (panelFont ());
-	label->setFontColor (colour);
-	label->setTransparency (true);
-	label->setHoriAlign (align);
-	label->setMouseEnabled (false);
-	frame->addView (label);
-}
-
-//------------------------------------------------------------------------
 bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platformType)
 {
 	if (frame)
 		return false;
 
-	frame = new CFrame (CRect (0, 0, kEditorWidth, kEditorHeight), this);
-	frame->setBackgroundColor (kPanel);
+	const CRect frameSize (0, 0, kEditorWidth, kEditorHeight);
+	frame = new CFrame (frameSize, this);
+	frame->setBackgroundColor (Pv::kPanel);
 
-	addLabel (CRect (kMargin, kMargin, kEditorWidth - kMargin, kMargin + kTitleHeight),
-	          "SampleDrum", kValue, kLeftText);
+	mPanelBitmap = VSTGUI::owned (bitmap2x ("pv_panel.png"));
+	mWearBitmap  = VSTGUI::owned (bitmap2x ("pv_wear.png"));
+	if (mPanelBitmap)
+		frame->setBackground (mPanelBitmap);
 
-	// COLUMN HEADINGS, from the drum map: the drum, and under it the note.
+	// ---- header: the engine line and the voice meter ----------------------
+	mEngine = new PvText (CPoint (346., 32.), 10.5, false, SciFi::Align::Left, Pv::kInk, 420.);
+	frame->addView (mEngine);
+	mVoiceMeter = new PvVoiceMeter (CRect (970., 19., 1178., 37.), kMaxVoices, kVoiceOn, kVoiceOff);
+	frame->addView (mVoiceMeter);
+
+	// ---- the eight strips --------------------------------------------------
 	for (int column = 0; column < kColumns; ++column)
 	{
-		const CRect cell = cellRect (column, 0);
-		const CCoord half = kHeaderHeight / 2;
-		addLabel (CRect (cell.left, kHeaderTop, cell.right, kHeaderTop + half),
-		          kDrumMap[column].name, kLabel, kCenterText);
+		const double x = stripX (column), mid = x + kStripWidth / 2.;
 
 		// THE NOTE BOX - the column's note parameter, not a label.
-		auto* box = new SampleDrumNoteBox (CRect (cell.left + 8, kHeaderTop + half, cell.right - 8,
-		                                          kGridTop - 3),
+		auto* box = new SampleDrumNoteBox (CRect (mid - kNoteWidth / 2., kNoteTop, mid + kNoteWidth / 2.,
+		                                          kNoteTop + kNoteHeight),
 		                                   this, static_cast<int32_t> (columnNoteParam (column)), column);
-		if (mController)
-			box->setValueNormalized (
-				static_cast<float> (mController->getParamNormalized (columnNoteParam (column))));
+		box->setValueNormalized (static_cast<float> (paramNormalized (columnNoteParam (column))));
 		mNotes[column] = box;
 		frame->addView (box);
-	}
 
-	// ROW LABELS, from the velocity bands - softest at the top.
-	addLabel (CRect (kMargin, kHeaderTop + kHeaderHeight / 2, kGridLeft - 6, kGridTop - 2),
-	          "note / velocity", kLabel, kLeftText);
-	refreshSharedNotes ();
-	for (int row = 0; row < kRows; ++row)
-	{
-		const CRect cell = cellRect (0, row);
-		addLabel (CRect (kMargin, cell.top, kGridLeft - 6, cell.bottom),
-		          std::to_string (bandLow (row)) + " - " + std::to_string (bandHigh (row)),
-		          kValue, kLeftText);
-	}
-
-	// THE GRID.
-	for (int row = 0; row < kRows; ++row)
-	{
-		for (int column = 0; column < kColumns; ++column)
+		for (int row = 0; row < kRows; ++row)
 		{
 			const int cell = cellIndex (column, row);
-			auto* view = new SampleDrumCellView (wellRect (column, row), cell);
+			const CRect screen = cellScreen (column, row);
+			CRect viewRect = screen;
+			viewRect.extend (SampleDrumCellView::kGlowMargin, SampleDrumCellView::kGlowMargin);
+			auto* view = new SampleDrumCellView (viewRect, cell);
 
 			// Both handlers go THROUGH THE CONTROLLER, which writes back to
 			// this cell and to the same cell in any other open editor.
@@ -214,57 +303,65 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 
 			mCells[cell] = view;
 			frame->addView (view);
-			refreshCell (cell);
 
-			// THE LEVEL BAR under it - an ordinary parameter control.
-			auto* level = new SampleDrumLevelBar (levelRect (column, row), this,
-			                                      static_cast<int32_t> (cellLevelParam (cell)), cell);
-			if (mController)
-				level->setValueNormalized (
-					static_cast<float> (mController->getParamNormalized (cellLevelParam (cell))));
-			mLevels[cell] = level;
-			frame->addView (level);
+			// THE LEVEL KNOB under it, and its value beside it.
+			const ParamID level = cellLevelParam (cell);
+			mLevels[cell] = addKnob (level, screen.left + 14., screen.bottom + 22., kLevelOuter);
+			mLevelText[cell] = addValue (screen.left + 34., screen.bottom + 20., 8.5, SciFi::Align::Left);
+			refreshValue (level, paramNormalized (level));
 		}
+
+		// THE HIT LAMP - an indicator: no listener, no parameter.
+		mHitLamps[column] = new PvLamp (CPoint (x + 22., kHitLampY), nullptr, 0);
+		mHitLamps[column]->setMouseEnabled (false);
+		frame->addView (mHitLamps[column]);
 	}
+	refreshSharedNotes ();
 
-	// THE OUTPUT TRIM, the one parameter so far, as a SpySlider.
-	mTrim = new SpySlider (CRect (kGridLeft, kSliderTop, kGridLeft + kSliderWidth,
-	                              kSliderTop + kSliderHeight),
-	                       this, static_cast<int32_t> (kOutputTrim));
-	mTrim->setLabel ("Output Trim");
-	mTrim->setFormatter ([] (float normalized)
-	{
-		// The same formatting the controller gives the host, so the panel
-		// and a generic editor cannot disagree about what it says.
-		char text[32] = {};
-		std::snprintf (text, sizeof (text), "%+.1f dB", paramDef (kOutputTrim).toPlain (normalized));
-		return std::string (text);
-	});
-	mTrim->setDefaultValue (static_cast<float> (paramDef (kOutputTrim).defaultNormalized ()));
-	if (mController)
-		mTrim->setValueNormalized (static_cast<float> (mController->getParamNormalized (kOutputTrim)));
-	frame->addView (mTrim);
+	// ---- MASTER --------------------------------------------------------------
+	mLastHitScreen = new PvLastHitOled (CRect (978., 106., 1170., 190.));
+	frame->addView (mLastHitScreen);
 
-	// THE OUTPUT ISOLATOR: bass, its crossover, treble, its crossover.
+	// The isolator: its response, then Bass and Bass Freq, Treble and
+	// Treble Freq, each with its value under it.
+	mIsolatorScreen = new PvIsolatorOled (CRect (978., 234., 1170., 288.));
+	frame->addView (mIsolatorScreen);
+	const double isoX[4] = { 996., 1040., 1104., 1150. };
 	for (int i = 0; i < 4; ++i)
 	{
 		const ParamID tag = kIsolatorTags[i];
-		const CCoord x = kIsolatorLeft + i * (kSliderWidth + kSliderGap);
-		auto* slider = new SpySlider (CRect (x, kSliderTop, x + kSliderWidth, kSliderTop + kSliderHeight),
-		                              this, static_cast<int32_t> (tag));
-		slider->setLabel (paramDef (tag).title);
-		slider->setFormatter ([tag] (float normalized) { return formatIsolator (tag, normalized); });
-		slider->setDefaultValue (static_cast<float> (paramDef (tag).defaultNormalized ()));
-		if (mController)
-			slider->setValueNormalized (static_cast<float> (mController->getParamNormalized (tag)));
-		mIsolator[i] = slider;
-		frame->addView (slider);
+		mIsolator[i] = addKnob (tag, isoX[i], 332., 12.);
+		mIsolatorText[i] = addValue (isoX[i], 353., 7.5, SciFi::Align::Centre);
+		refreshValue (tag, paramNormalized (tag));
 	}
+	refreshIsolatorScreen ();
 
-	addLabel (CRect (kGridLeft, kHelpTop, kEditorWidth - kMargin, kHelpTop + kHelpHeight),
-	          "Drop .wav on a cell.  Click: play.  Drag to another cell: move (Option: copy).  "
-	          "Right-click: empty.  Bar under a cell: level.  Option-click a slider: default.",
-	          kValue, kLeftText);
+	mTrim = addKnob (kOutputTrim, 1018., 432., 22.);
+	mTrimText = addValue (1018., 465., 9.5, SciFi::Align::Centre);
+	refreshValue (kOutputTrim, paramNormalized (kOutputTrim));
+
+	mMeter = new PvOutputMeter (CRect (1072., 394., 1170., 528.));
+	frame->addView (mMeter);
+	mOver = new PvLamp (CPoint (992., 504.), nullptr, 0);
+	mOver->setMouseEnabled (false);
+	frame->addView (mOver);
+
+	// BYPASS - the one lamp that is a switch: an instrument's bypass is
+	// silence (SampleDrumProcessor::process).
+	mBypass = new PvLamp (CPoint (992., 600.), this, static_cast<int32_t> (kBypass));
+	mBypass->setValueNormalized (static_cast<float> (paramNormalized (kBypass)));
+	mBypass->setDefaultValue (0.f);
+	mBypass->setTooltipText ("Bypass: silence");
+	frame->addView (mBypass);
+
+	for (int cell = 0; cell < kCellCount; ++cell)
+		refreshCell (cell);
+	refreshHeader ();
+	refreshLastHit ();
+
+	// ---- the wear, over everything, invisible to the mouse -----------------
+	if (mWearBitmap)
+		frame->addView (new PvOverlay (frameSize, mWearBitmap));
 
 	mTimer = makeOwned<CVSTGUITimer> ([this] (CVSTGUITimer*) { onTimer (); }, kTimerMs, true);
 
@@ -277,22 +374,41 @@ void PLUGIN_API SampleDrumEditor::close ()
 {
 	mTimer = nullptr;
 
-	for (auto*& cell : mCells)
-		cell = nullptr;
-	for (auto*& level : mLevels)
-		level = nullptr;
-	for (auto*& box : mNotes)
-		box = nullptr;
+	for (int cell = 0; cell < kCellCount; ++cell)
+	{
+		mCells[cell] = nullptr;
+		mLevels[cell] = nullptr;
+		mLevelText[cell] = nullptr;
+	}
+	for (int column = 0; column < kColumns; ++column)
+	{
+		mNotes[column] = nullptr;
+		mHitLamps[column] = nullptr;
+	}
+	for (int i = 0; i < 4; ++i)
+	{
+		mIsolator[i] = nullptr;
+		mIsolatorText[i] = nullptr;
+	}
 	mTrim = nullptr;
-	for (auto*& slider : mIsolator)
-		slider = nullptr;
+	mTrimText = nullptr;
+	mBypass = nullptr;
+	mOver = nullptr;
+	mEngine = nullptr;
+	mVoiceMeter = nullptr;
+	mLastHitScreen = nullptr;
+	mIsolatorScreen = nullptr;
+	mMeter = nullptr;
 	mHaveHits = false;
+	mLastTick = -1.;
 
 	if (frame)
 	{
 		frame->forget ();
 		frame = nullptr;
 	}
+	mPanelBitmap = nullptr;
+	mWearBitmap = nullptr;
 }
 
 //------------------------------------------------------------------------
@@ -306,69 +422,55 @@ void SampleDrumEditor::valueChanged (CControl* control)
 
 	mController->setParamNormalized (tag, value);
 	mController->performEdit (tag, value);
-
-	if (isCellLevelParam (tag))
-		showLevelOverlay (tag, value);
+	refreshValue (tag, value);
 }
 
 //------------------------------------------------------------------------
 void SampleDrumEditor::controlBeginEdit (CControl* control)
 {
-	if (mController == nullptr || control == nullptr)
-		return;
-
-	const ParamID tag = static_cast<ParamID> (control->getTag ());
-	mController->beginEdit (tag);
-
-	// The readout appears when the gesture STARTS, so a bar pressed and
-	// not yet moved already says what it is set to.
-	if (isCellLevelParam (tag))
-		showLevelOverlay (tag, control->getValueNormalized ());
+	if (mController && control)
+		mController->beginEdit (static_cast<ParamID> (control->getTag ()));
 }
 
 //------------------------------------------------------------------------
 void SampleDrumEditor::controlEndEdit (CControl* control)
 {
-	if (mController == nullptr || control == nullptr)
-		return;
-
-	const ParamID tag = static_cast<ParamID> (control->getTag ());
-	mController->endEdit (tag);
-
-	if (isCellLevelParam (tag))
-		clearLevelOverlay (tag);
+	if (mController && control)
+		mController->endEdit (static_cast<ParamID> (control->getTag ()));
 }
 
 //------------------------------------------------------------------------
 void SampleDrumEditor::updateControl (ParamID tag, ParamValue normalized)
 {
-	if (tag == kOutputTrim && mTrim)
+	const auto set = [normalized] (CControl* control)
 	{
-		mTrim->setValueNormalized (static_cast<float> (normalized));
-		mTrim->invalid ();
-	}
-
-	for (int i = 0; i < 4; ++i)
-		if (tag == kIsolatorTags[i] && mIsolator[i])
+		if (control)
 		{
-			mIsolator[i]->setValueNormalized (static_cast<float> (normalized));
-			mIsolator[i]->invalid ();
+			control->setValueNormalized (static_cast<float> (normalized));
+			control->invalid ();
 		}
+	};
+
+	if (tag == kOutputTrim)
+		set (mTrim);
+	if (tag == kBypass)
+		set (mBypass);
+	for (int i = 0; i < 4; ++i)
+		if (tag == kIsolatorTags[i])
+			set (mIsolator[i]);
 
 	const int cell = cellOfLevelParam (tag);
-	if (isCellIndex (cell) && mLevels[cell])
-	{
-		mLevels[cell]->setValueNormalized (static_cast<float> (normalized));
-		mLevels[cell]->invalid ();
-	}
+	if (isCellIndex (cell))
+		set (mLevels[cell]);
 
 	const int column = columnOfNoteParam (tag);
 	if (column >= 0 && mNotes[column])
 	{
-		mNotes[column]->setValueNormalized (static_cast<float> (normalized));
-		mNotes[column]->invalid ();
+		set (mNotes[column]);
 		refreshSharedNotes ();
 	}
+
+	refreshValue (tag, normalized);
 }
 
 //------------------------------------------------------------------------
@@ -379,14 +481,24 @@ void SampleDrumEditor::refreshCell (int cell)
 
 	mCells[cell]->setPath (mController->cellPath (cell));
 	mCells[cell]->setStatus (mController->cellStatus (cell));
+	mCells[cell]->setThumbnail (mController->cellThumbnail (cell));
+
+	// What one cell holds changes what every empty cell in its column
+	// borrows, and the header's count.
+	refreshFallbacks ();
+	refreshHeader ();
+	if (decodeLastHit (mLastHitWord).cell == cell)
+		refreshLastHit ();
 }
 
 //------------------------------------------------------------------------
-void SampleDrumEditor::setActivity (const std::uint32_t* hits, const std::uint8_t* sounding)
+void SampleDrumEditor::setActivity (const std::uint32_t* hits, const std::uint8_t* sounding,
+                                    const OutputActivity& output)
 {
 	if (hits == nullptr || sounding == nullptr)
 		return;
 
+	const double t = now ();
 	for (int cell = 0; cell < kCellCount; ++cell)
 	{
 		// A MOVED COUNT is a hit, however short - the whole reason for
@@ -394,9 +506,38 @@ void SampleDrumEditor::setActivity (const std::uint32_t* hits, const std::uint8_
 		// reply after opening only sets the baseline, or every cell ever
 		// struck would flash at once.
 		if (mHaveHits && hits[cell] != mLastHits[cell])
+		{
 			mFlash[cell] = 1.f;
+			mHitAt[cell] = t;
+		}
 		mLastHits[cell] = hits[cell];
 		mSounding[cell] = (sounding[cell] != 0);
+	}
+
+	// THE PEAKS are held until the next tick draws them, so two replies
+	// between ticks cannot lose one.
+	for (int ch = 0; ch < 2; ++ch)
+		mPendingPeak[ch] = std::max (mPendingPeak[ch], output.peak[ch]);
+
+	if (output.voices != mVoices)
+	{
+		mVoices = output.voices;
+		if (mVoiceMeter)
+			mVoiceMeter->setVoices (mVoices);
+	}
+	if (output.sampleRate > 0. && output.sampleRate != mSampleRate)
+	{
+		mSampleRate = output.sampleRate;
+		refreshHeader ();
+	}
+	if (output.lastHit != mLastHitWord)
+	{
+		// The first reply after opening sets the screen without a playhead.
+		const LastHit hit = decodeLastHit (output.lastHit);
+		if (mHaveHits && isCellIndex (hit.cell))
+			mHitAt[hit.cell] = t;
+		mLastHitWord = output.lastHit;
+		refreshLastHit ();
 	}
 	mHaveHits = true;
 }
@@ -409,12 +550,73 @@ void SampleDrumEditor::onTimer ()
 	if (mController)
 		mController->requestActivity ();
 
+	const double t = now ();
+	const double dt = (mLastTick < 0.) ? 0. : std::min (0.25, t - mLastTick);
+	mLastTick = t;
+
+	// ---- cells and the column lamps ---------------------------------------
+	bool columnLit[kColumns] = {};
 	for (int cell = 0; cell < kCellCount; ++cell)
 	{
 		const float lamp = std::max (mFlash[cell], mSounding[cell] ? kSoundingLamp : 0.f);
 		if (mCells[cell])
+		{
 			mCells[cell]->setLamp (lamp);
+			const double seconds = mController ? mController->cellSeconds (cell) : 0.;
+			const double position = (lamp > 0.f && seconds > 0.) ? (t - mHitAt[cell]) / seconds : -1.;
+			mCells[cell]->setPlayhead (position <= 1. ? position : -1.);
+		}
+		if (lamp > 0.25f)
+			columnLit[columnOfCell (cell)] = true;
 		mFlash[cell] = std::max (0.f, mFlash[cell] - kFlashDecay);
+	}
+	for (int column = 0; column < kColumns; ++column)
+		if (mHitLamps[column] && (mHitLamps[column]->getValueNormalized () >= 0.5f) != columnLit[column])
+		{
+			mHitLamps[column]->setValueNormalized (columnLit[column] ? 1.f : 0.f);
+			mHitLamps[column]->invalid ();
+		}
+
+	// ---- the last hit's playhead ------------------------------------------
+	if (mLastHitScreen && mController)
+	{
+		const LastHit hit = decodeLastHit (mLastHitWord);
+		double position = -1.;
+		if (isCellIndex (hit.cell) && mHaveHits)
+		{
+			const double seconds = mController->cellSeconds (hit.cell);
+			if (seconds > 0. && mSounding[hit.cell])
+				position = (t - mHitAt[hit.cell]) / seconds;
+		}
+		mLastHitScreen->setPlayhead (position <= 1. ? position : -1.);
+	}
+
+	// ---- the meter: fall at a steady rate, hold the peak, light OVER ------
+	for (int ch = 0; ch < 2; ++ch)
+	{
+		const double peak = toDb (mPendingPeak[ch]);
+		mPendingPeak[ch] = 0.f;
+		mMeterDb[ch] = std::max (peak, mMeterDb[ch] - kMeterFallDbPerSecond * dt);
+		if (peak >= mHoldDb[ch])
+		{
+			mHoldDb[ch] = peak;
+			mHoldAge[ch] = 0.;
+		}
+		else if ((mHoldAge[ch] += dt) > kPeakHoldSeconds)
+			mHoldDb[ch] -= kMeterFallDbPerSecond * dt;
+		if (peak >= 0.)
+			mOverUntil = t + kOverHoldSeconds;
+	}
+	if (mMeter)
+		mMeter->setLevels (mMeterDb[0], mMeterDb[1], mHoldDb[0], mHoldDb[1]);
+	if (mOver)
+	{
+		const bool over = t < mOverUntil;
+		if ((mOver->getValueNormalized () >= 0.5f) != over)
+		{
+			mOver->setValueNormalized (over ? 1.f : 0.f);
+			mOver->invalid ();
+		}
 	}
 }
 

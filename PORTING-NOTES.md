@@ -709,3 +709,67 @@ screen.
    - Open a 1.0.1.0 project: the isolator is flat.
 4. Record the results here, then bump the version (not done on this
    branch).
+
+## 15. Panel designs (2026-11-10)
+
+Three Polivoks black-panel mock-ups in `Designs/` (R2Synth / ForTran / SpyBand look, 70s sci-fi lettering),
+all with a new **nearly-new** finish (`weather.py` mode `0`): 1 Kit Grid (colour OLED cells + LED level
+ladders), 2 Channel Strips (a strip per drum, level knobs, amber OLEDs), 3 Pads + Scope (big white OLED of the
+last cell, rubber pads with hit lamps, mini level faders). Each has an **Isolator** section (§14): a
+three-band response screen plus Bass, Bass Freq, Treble and Treble Freq, placed before Output Trim. Sources and commands in `Designs/README.md`.
+Design 2 is now the plug-in's panel: see §16.
+
+## 16. The Polivoks panel (2026-11-10, branch `polivoks`, merged into `main`)
+
+The editor is now design 2, **Channel Strips** (`Designs/SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png`),
+1200 × 640, built **ForTran's way** (ForTran-VSTi README, "The panel"):
+
+- **`resource/pv_panel.png`** — everything that never changes (boxes, titles, legends, knob scales, OLED bezels,
+  the band in each cell's corner, the wordmark), 2x, from `tools/polivoks/d2p.js` with `window.STATIC`.
+- **`resource/pv_wear.png`** — the **nearly-new** wear as a transparent layer over everything (`wear.py`).
+- Everything that moves is drawn by views **at d2p.js's coordinates**. Move one, move both, then
+  `tools/polivoks/make-panel.sh` (needs python3 + playwright + numpy/scipy/Pillow; the VM has no playwright,
+  so the PNGs were rendered in the cloud workspace).
+
+| Piece | File | Notes |
+|---|---|---|
+| Lettering | `SciFiLettering.{h,cpp}` | ForTran's, namespace changed, **`#` and `↑` added** (D#1, F#1, A#1, C#2; "PLAYS 64-95 ↑"). |
+| Knob, lamp, text, OLED base, voice meter, overlay | `PvControls.{h,cpp}` | ForTran's subset; the voice meter takes a segment count and colours (32, amber); a lamp with no listener is an indicator. |
+| Last hit, isolator response, output meter | `SampleDrumPvViews.{h,cpp}` | new; plus `Pv::drawGlass`, `Pv::drawThumbnail`. |
+| Cells | `SampleDrumCellView` | same gestures; drawn as an amber OLED: waveform, name, lit border, **playhead**, "EMPTY / PLAYS a-b ↓" from `chooseCell`. The view is 4 px bigger than its screen for the border. |
+| Note box | `SampleDrumNoteBox` | same control; amber lettering; a **shared note is now red** (amber is the normal colour here). |
+| Cell level | `PvKnob` per cell | replaces the level bar (`SampleDrumLevelBar` and `SampleDrumControls` are now unused but still compiled — delete when convenient). Value printed beside it; "OFF" from `cellLevelGain`. Alt-click / double-click = default. |
+| Isolator | 4 `PvKnob`s + response screen | "KILL" from `isolatorGain`; the curve is **`isolatorResponseDb`** (new, SDK-free): the LR4 network in the frequency domain, flat to 1e-9 dB at 0/0 (tested). |
+| Trim, Bypass, Over | `PvKnob`, `PvLamp` (Bypass is the switch), `PvLamp` indicator | OVER lights 1.5 s after a peak ≥ 0 dBFS. |
+
+**New data from the processor** (all on the UI thread, as §5 requires):
+
+- **Thumbnails**: `makeThumbnail` (SDK-free, `SampleDrumSample`) — 96 min/max pairs as signed bytes, **absolute**
+  (127 = full scale). Made once in `loadCell` from the decoded audio and sent on the **status message**
+  (`Thumbnail`, `Seconds`), so it works from the embedded copy on a Mac without the files. The controller believes
+  it only for the path it was made from, like the status.
+- **Activity reply** gains `Peak` (L/R, max since the last reply — the audio thread raises an atomic, the reply
+  `exchange(0)`s it), `Voices` (`SampleDrumDsp::voicesSounding`, an atomic set at the end of each block — the old
+  `activeVoices()` reads the voice array and is **not** safe from the UI thread), `LastHit` (cell, velocity, a
+  16-bit sequence, packed in one atomic word; set when a voice actually **starts**, so a note on an empty column is
+  not a hit) and `Rate`. All optional on the reading side.
+- The playheads are **estimated** in the editor from the hit time and the file's length; nothing extra is sent.
+
+### Verification (from the Linux VM)
+
+All 15 `.cpp` files compile against the SDK and VSTGUI with `-Wall -Wextra` (no warnings in our code);
+**0 unresolved `SampleDrum::` symbols** out of 101. `tools/run-tests.sh`: **DSP 578 / 0** (adds `testPanelData`:
+thumbnails, the response curve, voice count and last hit), **State 29 / 0**, versions agree, installer suites pass.
+
+**Not verified:** the Mac build, the validator, `auval`, and anything on screen. In particular check by hand:
+
+1. `./setup-xcode.sh --no-open` (**new source files and two new PNGs**), build, validator, `auval -v aumu SmDr AECo`.
+2. The panel matches the design PNG; nothing is offset from the printed bezels/scales (a mismatch means d2p.js and
+   `SampleDrumEditor.h` disagree).
+3. Drop a .wav: name and waveform appear; an empty cell under it reads "PLAYS … ↓/↑"; a missing file shows red.
+4. Play: cells light with a moving playhead, the column's HIT lamp, LAST HIT shows drum/band/file/VEL; click a cell
+   → "CLICKED".
+5. Knobs: drag, Shift-drag, wheel, Alt-click/double-click default; automation moves them; the level shows "OFF" at
+   the bottom, the isolator "KILL".
+6. Isolator curve follows all four knobs; two full-scale hits light OVER; BYPASS toggles and silences.
+7. Two editors open on one instance, and a cell dragged between two instances, still behave as §9 says.

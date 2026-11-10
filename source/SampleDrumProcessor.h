@@ -147,6 +147,17 @@ private:
 	/** The decoded audio, OWNED HERE. The DSP holds bare pointers. */
 	std::shared_ptr<const SampleBuffer> mSamples[kCellCount];
 
+	/** Each cell's waveform for the panel (makeThumbnail) and length,
+	    made once in loadCell. UI thread only. */
+	std::vector<std::int8_t> mThumbnails[kCellCount];
+	double mSeconds[kCellCount] = {};
+
+	/** The output's peak on L and R since the panel last asked: raised by
+	    the audio thread at the end of every block, taken with exchange(0)
+	    by sendActivity on the UI thread. A peak raced between the two is
+	    at worst shown one tick late. */
+	std::atomic<float> mPeak[2] { { 0.f }, { 0.f } };
+
 	/** A replaced buffer and the block number at which it was replaced. */
 	struct Retired
 	{

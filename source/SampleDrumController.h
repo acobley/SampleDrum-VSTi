@@ -73,6 +73,12 @@ public:
 	const std::string& cellPath (int cell) const;
 	SampleStatus cellStatus (int cell) const;
 
+	/** The cell's waveform and length as the processor last reported them
+	    - believed, like the status, only for the path it was made from.
+	    Empty / 0 otherwise. */
+	const std::vector<std::int8_t>& cellThumbnail (int cell) const;
+	double cellSeconds (int cell) const;
+
 	/** A file dropped on a cell from OUTSIDE, or "" to empty it. */
 	void setCellPath (int cell, const std::string& path);
 
@@ -131,6 +137,8 @@ private:
 	    a cell that flashes "could not be read" on every project load. */
 	std::string  mReportedPaths[kCellCount];
 	SampleStatus mReported[kCellCount] = {};
+	std::vector<std::int8_t> mThumbnails[kCellCount];
+	double mSeconds[kCellCount] = {};
 };
 
 //------------------------------------------------------------------------

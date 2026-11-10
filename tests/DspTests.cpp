@@ -1700,6 +1700,106 @@ static void testIsolator ()
 	}
 }
 
+//------------------------------------------------------------------------
+// What the Polivoks panel reads: thumbnails, the isolator's response,
+// the voice count and the last hit.
+//------------------------------------------------------------------------
+static void testPanelData ()
+{
+	std::printf ("panel data\n");
+
+	// THUMBNAILS - absolute, min/max per slice, both channels.
+	{
+		auto full = makeSample (960, 1.f);
+		const auto t = makeThumbnail (*full);
+		check (t.size () == static_cast<std::size_t> (kThumbnailPoints) * 2, "a thumbnail is 2 x kThumbnailPoints bytes");
+		check (t[0] == 0 && t[1] == 127, "a full-scale DC file: min 0, max 127");
+
+		auto shaped = makeShapedSample (4800);   // +/-0.7, L and R opposite
+		const auto s = makeThumbnail (*shaped);
+		int lo = 0, hi = 0;
+		for (std::size_t i = 0; i < s.size (); i += 2) { lo = std::min<int> (lo, s[i]); hi = std::max<int> (hi, s[i + 1]); }
+		check (hi == 89 && lo == -89, "0.7 of full scale reads as 89, both signs (L and R both counted)");
+
+		auto tiny = makeSample (10, -0.5f);
+		const auto few = makeThumbnail (*tiny);
+		check (few.size () == static_cast<std::size_t> (kThumbnailPoints) * 2, "fewer frames than points still fills every point");
+		bool allQuiet = true;
+		for (std::size_t i = 0; i < few.size (); i += 2)
+			if (few[i] != -64 || few[i + 1] != 0)
+				allQuiet = false;
+		check (allQuiet, "and repeats rather than leaving gaps (-0.5 reads -64)");
+
+		SampleBuffer empty;
+		check (makeThumbnail (empty).empty (), "an empty buffer has no thumbnail");
+		check (makeThumbnail (*full, 0).empty (), "nor does zero points");
+	}
+
+	// THE ISOLATOR'S RESPONSE.
+	{
+		bool flat = true;
+		for (double hz = 20.0; hz <= 20000.0; hz *= 1.1)
+		{
+			if (std::fabs (isolatorResponseDb (hz, 0.0, 200.0, 0.0, 3500.0)) > 1e-9) flat = false;
+			if (std::fabs (isolatorResponseDb (hz, 0.0, 480.0, 0.0, 1600.0)) > 1e-9) flat = false;
+		}
+		check (flat, "at 0 dB / 0 dB the response is flat at any two crossovers");
+
+		checkClose (isolatorResponseDb (20.0, 6.0, 200.0, 0.0, 3500.0), 6.0, 0.01, "bass +6 reads +6 dB well below the crossover");
+		checkClose (isolatorResponseDb (20000.0, 0.0, 200.0, -12.0, 3500.0), -12.0, 0.05, "treble -12 reads -12 dB well above it");
+		check (isolatorResponseDb (20.0, kIsolatorMinDb, 200.0, 0.0, 3500.0) < -70.0, "bass killed: deep cut at 20 Hz");
+		check (isolatorResponseDb (20000.0, 0.0, 200.0, kIsolatorMinDb, 3500.0) < -50.0, "treble killed: deep cut at 20 kHz");
+		check (isolatorResponseDb (900.0, kIsolatorMinDb, 200.0, kIsolatorMinDb, 3500.0) > -1.5, "both killed: the mid band is still there");
+		check (isolatorResponseDb (900.0, kIsolatorMinDb, 200.0, kIsolatorMinDb, 3500.0) >= kIsolatorResponseFloorDb, "never below the floor");
+		checkClose (isolatorResponseDb (20.0, 0.0005, 200.0, 0.0, 3500.0), 0.0, 1e-9, "within the unity snap is exactly 0 dB, as the DSP");
+	}
+
+	// THE VOICE COUNT AND THE LAST HIT.
+	{
+		auto kick = makeSample (48000, 0.25f);
+		auto snare = makeSample (48000, 0.25f);
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		dsp.setMaxBlockSize (256);
+		dsp.setCellSample (cellIndex (0, 3), kick.get ());
+		dsp.setCellSample (cellIndex (1, 0), snare.get ());
+		dsp.syncCells (256);
+		std::vector<float> l (256), r (256);
+
+		check (decodeLastHit (dsp.lastHit ()).cell == -1, "nothing struck yet");
+		check (dsp.voicesSounding () == 0, "no voices yet");
+
+		dsp.noteOn (36, velocityFor (100), 10);
+		dsp.render (l.data (), r.data (), 256);
+		LastHit a = decodeLastHit (dsp.lastHit ());
+		check (a.cell == cellIndex (0, 3) && a.velocity == 100, "a kick at 100: cell 24, velocity 100");
+		check (dsp.voicesSounding () == 1, "one voice");
+
+		dsp.noteOn (38, velocityFor (5), 0);   // row 0 is loaded for the snare
+		dsp.render (l.data (), r.data (), 256);
+		LastHit b = decodeLastHit (dsp.lastHit ());
+		check (b.cell == cellIndex (1, 0) && b.velocity == 5 && b.sequence == a.sequence + 1, "a soft snare follows, sequence moved on");
+		check (dsp.voicesSounding () == 2, "two voices");
+
+		dsp.auditionCell (cellIndex (0, 3));
+		dsp.render (l.data (), r.data (), 256);
+		LastHit c = decodeLastHit (dsp.lastHit ());
+		check (c.cell == cellIndex (0, 3) && c.velocity == 0 && c.sequence == b.sequence + 1, "an audition: velocity 0, the same cell again is still news");
+
+		dsp.noteOn (49, velocityFor (100), 0);   // crash column is empty
+		dsp.render (l.data (), r.data (), 256);
+		check (decodeLastHit (dsp.lastHit ()).sequence == c.sequence, "a note that plays nothing is not a hit");
+
+		dsp.reset ();
+		check (dsp.voicesSounding () == 0, "reset: no voices");
+
+		check (decodeLastHit (encodeLastHit (31, 127, 0x12345)).cell == 31
+		       && decodeLastHit (encodeLastHit (31, 127, 0x12345)).velocity == 127
+		       && decodeLastHit (encodeLastHit (31, 127, 0x12345)).sequence == 0x2345, "encode/decode round trip; the sequence wraps at 16 bits");
+		check (decodeLastHit (encodeLastHit (40, 1, 1)).cell == -1, "a cell out of range decodes as nothing");
+	}
+}
+
 int main ()
 {
 	std::printf ("SampleDrum DSP tests\n");
@@ -1725,6 +1825,7 @@ int main ()
 	testCellLevels ();
 	testColumnNotes ();
 	testIsolator ();
+	testPanelData ();
 	measureLevels ();
 
 	std::printf ("--------------------\n");

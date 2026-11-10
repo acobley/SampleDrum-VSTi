@@ -4,11 +4,13 @@
 
 #include "SampleDrumCellView.h"
 
-#include "SampleDrumControls.h"
+#include "SampleDrumPvViews.h"
 #include "SampleDrumKit.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 
 using namespace VSTGUI;
@@ -17,51 +19,27 @@ namespace SampleDrum {
 
 namespace {
 
-// The well, from Project6's SpySampleSlot palette so the two plug-ins
-// read as a family.
-const CColor kWellEmpty   ( 40,  40,  40, 255);
-const CColor kWellLoaded  ( 58,  58,  58, 255);
-const CColor kWellLit     (190,  60,  50, 255);   // lamp full on
-const CColor kWellShadow  (100, 100, 100, 255);
-const CColor kWellHigh    (200, 200, 200, 255);
-const CColor kText        (255, 255, 255, 255);
-const CColor kTextBad     (208, 132, 132, 255);
-const CColor kTextHint    (110, 110, 110, 255);
-const CColor kDropAccept  ( 50, 255,  50, 255);
-
-CColor mix (const CColor& a, const CColor& b, float t)
+/** Shorten `text` from the end until it fits `width` in the lettering. */
+std::string fitted (std::string text, double size, double width)
 {
-	t = std::min (1.f, std::max (0.f, t));
-	auto channel = [t] (uint8_t x, uint8_t y)
-	{
-		return static_cast<uint8_t> (x + (y - x) * t + 0.5f);
-	};
-	return CColor (channel (a.red, b.red), channel (a.green, b.green),
-	               channel (a.blue, b.blue), 255);
-}
-
-/** A RECESSED well: dark top-left, light bottom-right - the reverse of a
-    raised bar. Local, as in Project6, so SampleDrumControls.cpp stays a
-    straight namespace-renamed copy. */
-void drawWellEdge (CDrawContext* context, const CRect& r)
-{
-	context->setLineWidth (1.);
-	context->setFrameColor (kWellShadow);
-	context->drawLine (CPoint (r.left, r.bottom - 1), CPoint (r.left, r.top));
-	context->drawLine (CPoint (r.left, r.top), CPoint (r.right - 1, r.top));
-	context->setFrameColor (kWellHigh);
-	context->drawLine (CPoint (r.right - 1, r.top + 1), CPoint (r.right - 1, r.bottom - 1));
-	context->drawLine (CPoint (r.right - 1, r.bottom - 1), CPoint (r.left + 1, r.bottom - 1));
-}
-
-/** Shorten `text` from the end until it fits `width`. */
-std::string fitted (CDrawContext* context, std::string text, CCoord width)
-{
-	if (context->getStringWidth (text.c_str ()) <= width)
+	if (SciFi::textWidth (text, size, false) <= width)
 		return text;
-	while (!text.empty () && context->getStringWidth ((text + "...").c_str ()) > width)
+	while (!text.empty () && SciFi::textWidth (text + "..", size, false) > width)
 		text.pop_back ();
-	return text + "...";
+	return text + "..";
+}
+
+std::string upper (std::string s)
+{
+	for (auto& ch : s)
+		ch = static_cast<char> (std::toupper (static_cast<unsigned char> (ch)));
+	return s;
+}
+
+void text (CDrawContext* c, const std::string& s, double x, double y, const CColor& col,
+           SciFi::Align align, double size)
+{
+	SciFi::drawText (c, s, CPoint (x, y), size, false, col, align);
 }
 
 } // namespace
@@ -157,65 +135,131 @@ void SampleDrumCellView::refreshTooltip ()
 }
 
 //------------------------------------------------------------------------
+void SampleDrumCellView::setThumbnail (const std::vector<std::int8_t>& thumb)
+{
+	if (thumb == mThumb)
+		return;
+	mThumb = thumb;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::setFallback (int row)
+{
+	if (row == mFallbackRow)
+		return;
+	mFallbackRow = row;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+void SampleDrumCellView::setPlayhead (double position)
+{
+	// Half-pixel steps: no redraw for a change nobody can see.
+	position = (position < 0.) ? -1. : std::floor (std::min (1., position) * 180.) / 180.;
+	if (position == mPlayhead)
+		return;
+	mPlayhead = position;
+	invalid ();
+}
+
+//------------------------------------------------------------------------
+// THE POLIVOKS CELL (tools/polivoks/d2p.js): an amber OLED behind glass.
+// The bezel, the black, the dot grid and the band in the top right corner
+// are printed on the panel bitmap; this draws what is in the cell. The
+// view is kGlowMargin bigger than the screen all round, for the lit
+// border.
+//------------------------------------------------------------------------
 void SampleDrumCellView::draw (CDrawContext* context)
 {
-	const CRect r = getViewSize ();
+	context->setDrawMode (kAntiAliasing | kNonIntegralMode);
+	CRect r = getViewSize ();
+	r.inset (kGlowMargin, kGlowMargin);
+	const double x = r.left, y = r.top, w = r.getWidth (), h = r.getHeight ();
+	const bool lit = mLamp > 0.02f;
+	const CColor amber = Pv::kScreen;
 
-	const CColor resting = mPath.empty () ? kWellEmpty : kWellLoaded;
-	context->setFillColor (mix (resting, kWellLit, mLamp));
-	context->drawRect (r, kDrawFilled);
-	drawWellEdge (context, r);
+	// LIT: the amber border, with its bloom - brightest on the hit, held
+	// dimmer while the cell is still sounding.
+	if (lit)
+	{
+		CRect b = r;
+		b.extend (3., 3.);
+		if (auto p = owned (context->createRoundRectGraphicsPath (b, 4.)))
+		{
+			context->setLineStyle (kLineSolid);
+			context->setLineWidth (4.);
+			context->setFrameColor (Pv::alpha (amber, 0.22 * mLamp));
+			context->drawGraphicsPath (p, CDrawContext::kPathStroked);
+			context->setLineWidth (1.6);
+			context->setFrameColor (Pv::alpha (amber, 0.35 + 0.65 * mLamp));
+			context->drawGraphicsPath (p, CDrawContext::kPathStroked);
+		}
+	}
+
+	context->saveGlobalState ();
+	{
+		ConcatClip clip (*context, r);
+
+		if (!mOverlay.empty ())
+		{
+			// THE OVERLAY WINS - a level being set is what the reader wants.
+			text (context, upper (mOverlay), x + w / 2., y + h / 2. + 3., Pv::kInk, SciFi::Align::Centre, 9.);
+		}
+		else if (mPath.empty ())
+		{
+			text (context, "EMPTY", x + w / 2., y + h / 2., Pv::kOledText, SciFi::Align::Centre, 7.5);
+			// WHAT THIS VELOCITY PLAYS INSTEAD - chooseCell's answer.
+			if (mFallbackRow >= 0)
+			{
+				char t[32];
+				std::snprintf (t, sizeof (t), "PLAYS %d-%d %s", bandLow (mFallbackRow), bandHigh (mFallbackRow),
+				               mFallbackRow > rowOfCell (mCell) ? "\xE2\x86\x93" : "\xE2\x86\x91");
+				text (context, t, x + w / 2., y + h / 2. + 12., Pv::alpha (amber, 0.7), SciFi::Align::Centre, 6.5);
+			}
+			else
+				text (context, "DROP A .WAV", x + w / 2., y + h / 2. + 12., Pv::alpha (Pv::kOledText, 0.7),
+				      SciFi::Align::Centre, 6.5);
+		}
+		else
+		{
+			// THE NAME, and - only when there is something to say - why the
+			// cell will not play. A cell that shows a name and is silent when
+			// struck, with no reason given, is the failure this must not have.
+			const bool bad = (mStatus != SampleStatus::Loaded);
+			const CColor nameColour = bad ? Pv::kRed : (lit ? Pv::kScreenBright : amber);
+			text (context, fitted (upper (fileStemOf (mPath)), 7., w - 10.), x + 5., y + h - 5., nameColour,
+			      SciFi::Align::Left, 7.);
+			if (bad)
+				text (context, fitted (upper (sampleStatusText (mStatus)), 7., w - 10.), x + w / 2., y + h / 2. + 2.,
+				      Pv::kRed, SciFi::Align::Centre, 7.);
+			else
+			{
+				const CRect wave (x + 4., y + 14., x + w - 4., y + h - 14.);
+				Pv::drawThumbnail (context, wave, mThumb, amber, lit);
+				if (lit && mPlayhead >= 0. && mPlayhead <= 1.)
+				{
+					const double px = wave.left + wave.getWidth () * mPlayhead;
+					context->setLineStyle (kLineSolid);
+					context->setLineWidth (1.);
+					context->setFrameColor (CColor (255, 255, 255, 204));
+					context->drawLine (CPoint (px, wave.top), CPoint (px, wave.bottom));
+				}
+			}
+		}
+
+		Pv::drawGlass (context, r);
+	}
+	context->restoreGlobalState ();
 
 	if (mDragOver)
 	{
 		CRect highlight = r;
 		highlight.inset (1., 1.);
+		context->setLineStyle (kLineSolid);
 		context->setLineWidth (2.);
-		context->setFrameColor (kDropAccept);
+		context->setFrameColor (Pv::kMint);
 		context->drawRect (highlight, kDrawStroked);
-	}
-
-	context->setFont (panelFont ());
-	const CCoord lineHeight = panelFont ()->getSize () + 3.;
-	const CCoord width = r.getWidth () - 8.;
-
-	// THE OVERLAY WINS: while the bar below is dragged, the level is what
-	// the reader wants, and the name will be back when the drag ends.
-	if (!mOverlay.empty ())
-	{
-		context->setFontColor (kText);
-		context->drawString (mOverlay.c_str (), r, kCenterText, true);
-		setDirty (false);
-		return;
-	}
-
-	if (mPath.empty ())
-	{
-		context->setFontColor (kTextHint);
-		context->drawString ("drop .wav", r, kCenterText, true);
-		setDirty (false);
-		return;
-	}
-
-	// THE NAME, and under it - only when there is something to say - why
-	// the cell will not play. A cell that shows a name and is silent when
-	// struck, with no reason given, is the failure this panel must not have.
-	const std::string name = fitted (context, fileStemOf (mPath), width);
-	const bool bad = (mStatus != SampleStatus::Loaded);
-
-	CRect line (r.left + 4., r.top + (r.getHeight () - lineHeight * (bad ? 2. : 1.)) * 0.5,
-	            r.right - 4., 0.);
-	line.bottom = line.top + lineHeight;
-
-	context->setFontColor (bad ? kTextBad : kText);
-	context->drawString (name.c_str (), line, kCenterText, true);
-
-	if (bad)
-	{
-		line.offset (0., lineHeight);
-		context->setFont (panelFontSmall ());
-		context->drawString (fitted (context, sampleStatusText (mStatus), width).c_str (),
-		                     line, kCenterText, true);
 	}
 
 	setDirty (false);
