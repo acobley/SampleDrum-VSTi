@@ -707,8 +707,8 @@ screen.
    - The host's generic editor shows "200" and "3500" Hz; type
      "1000" into Bass Freq: it clamps to 500.
    - Open a 1.0.1.0 project: the isolator is flat.
-4. Record the results here, then bump the version (not done on this
-   branch).
+4. Record the results here, then bump the version. **Done: checked on the
+   Mac with the Polivoks panel (§16), released as 1.1.0.0.**
 
 ## 15. Panel designs (2026-11-10)
 
@@ -761,7 +761,9 @@ All 15 `.cpp` files compile against the SDK and VSTGUI with `-Wall -Wextra` (no 
 **0 unresolved `SampleDrum::` symbols** out of 101. `tools/run-tests.sh`: **DSP 578 / 0** (adds `testPanelData`:
 thumbnails, the response curve, voice count and last hit), **State 29 / 0**, versions agree, installer suites pass.
 
-**Not verified:** the Mac build, the validator, `auval`, and anything on screen. In particular check by hand:
+**Verified on the Mac (2026-11-10, Andy):** built, the panel looked at against the design, and checked working.
+
+The hand checks, for the next change that touches the panel:
 
 1. `./setup-xcode.sh --no-open` (**new source files and two new PNGs**), build, validator, `auval -v aumu SmDr AECo`.
 2. The panel matches the design PNG; nothing is offset from the printed bezels/scales (a mismatch means d2p.js and
@@ -773,3 +775,6 @@ thumbnails, the response curve, voice count and last hit), **State 29 / 0**, ver
    the bottom, the isolator "KILL".
 6. Isolator curve follows all four knobs; two full-scale hits light OVER; BYPASS toggles and silences.
 7. Two editors open on one instance, and a cell dragged between two instances, still behave as §9 says.
+
+**Version: 1.1.0.0** — the isolator's four parameters and the new panel; a minor bump, as ForTran's
+Polivoks panel was. Notes in `installer/release-notes-1.1.0.0.md`; `tools/check-versions.py` agrees.
