@@ -118,7 +118,7 @@ Your projects keep their samples; nothing else is installed.
 ## Checksum
 
 ```
-SHA-256: <paste from: shasum -a 256 installer/SampleDrum-1.1.0.0.pkg>
+SHA-256: 71c27f831cb4a3cb34a80e6562f0861ccd7b030834db6c412eb6fa4a95454906
 ```
 
 ---
