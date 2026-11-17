@@ -834,4 +834,12 @@ to exactly unity even through a float; titles, ids, switch types and the disjoin
 6. Automate a mute on the beat, and a drum level sweep: no clicks, and the lamps/knobs follow.
 7. The host's generic editor: "On"/"Off" for solo and mute; type "on" into one.
 8. Open a 1.1.0.0 project: it sounds the same, every strip at 0 dB and unlit.
-9. Record the results here, then bump the version (24 new parameters: **1.2.0.0**).
+9. Record the results here. **Not yet done on the Mac** - the version was bumped first, at Andy's request.
+
+**Version: 1.2.0.0** (2026-11-17) — 24 new parameters and a taller panel; a minor bump, as 1.1.0.0 was.
+`CMakeLists.txt`, `source/version.h` and `au-info.plist` (AU `0x00010200`, integer 66048) moved together;
+`tools/check-versions.py` agrees. Notes in `installer/release-notes-1.2.0.0.md` (the 1.1.0.0 notes from
+"What it is" on, updated; the SHA-256 placeholder is for `publish-release.sh`). The installer's closing page
+mentions the drum level. The notes also say **macOS 12 or later**, following the deployment-target raise to
+12.0 for Xcode 27 (`CMakeLists.txt`, `installer/distribution.xml`'s `allowed-os-versions`), which arrived on
+this branch alongside.
