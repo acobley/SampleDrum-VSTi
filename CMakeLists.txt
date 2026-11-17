@@ -26,7 +26,9 @@
 
 cmake_minimum_required(VERSION 3.25.0)
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET 10.13 CACHE STRING "macOS deployment target")
+# Xcode 27 builds for macOS 12.0 or later only; anything lower makes the
+# compiler check fail ("No CMAKE_C_COMPILER could be found").
+set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0 CACHE STRING "macOS deployment target")
 
 #-----------------------------------------------------------------------------
 # UNIVERSAL BY DEFAULT
@@ -202,6 +204,36 @@ if(PORT_BUILD_AU)
                 "${PLUGIN_NAME}: could not fetch Apple's AudioUnitSDK, so the Audio Unit target is "
                 "skipped. The VST3 build is unaffected. Clone it yourself into "
                 "external/AudioUnitSDK, or configure with -DPORT_BUILD_AU=OFF.")
+        endif()
+    endif()
+endif()
+
+# The AudioUnitSDK is built by a nested xcodebuild of Apple's own project (the
+# SDK's AUv2 helper adds it as a PRE_BUILD step), so our deployment target does
+# not reach it: it builds at whatever its project file says - 11.0 for 1.1.0.
+# Xcode 27 refuses anything below 12.0, and the Audio Unit target then fails at
+# "PhaseScriptExecution CMake PreBuild Rules" with no useful message. external/
+# is re-cloned when the pin changes, so this is re-applied on every configure
+# rather than edited by hand. Only ever raises the value, never lowers it.
+if(PORT_AU_ENABLED)
+    set(_au_pbxproj "${SMTG_AUDIOUNIT_SDK_PATH}/AudioUnitSDK.xcodeproj/project.pbxproj")
+    if(EXISTS "${_au_pbxproj}")
+        file(READ "${_au_pbxproj}" _au_proj)
+        # The match leaves out the trailing ';' - CMake would split the list on it.
+        string(REGEX MATCHALL "MACOSX_DEPLOYMENT_TARGET = [0-9.]+" _au_targets "${_au_proj}")
+        list(REMOVE_DUPLICATES _au_targets)
+        set(_au_proj_new "${_au_proj}")
+        foreach(_t IN LISTS _au_targets)
+            string(REGEX REPLACE "^MACOSX_DEPLOYMENT_TARGET = " "" _v "${_t}")
+            if(_v VERSION_LESS CMAKE_OSX_DEPLOYMENT_TARGET)
+                string(REPLACE "${_t};" "MACOSX_DEPLOYMENT_TARGET = ${CMAKE_OSX_DEPLOYMENT_TARGET};"
+                       _au_proj_new "${_au_proj_new}")
+            endif()
+        endforeach()
+        if(NOT _au_proj_new STREQUAL _au_proj)
+            file(WRITE "${_au_pbxproj}" "${_au_proj_new}")
+            message(STATUS "${PLUGIN_NAME}: raised the AudioUnitSDK project's deployment target "
+                           "to ${CMAKE_OSX_DEPLOYMENT_TARGET}")
         endif()
     endif()
 endif()
