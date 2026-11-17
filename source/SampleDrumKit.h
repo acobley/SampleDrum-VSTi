@@ -212,4 +212,29 @@ static_assert (kDrumMap[3].note == 42 && kDrumMap[4].note == 46,
                "chokes() names the hi-hat columns by position; move them together");
 
 //------------------------------------------------------------------------
+// Solo and mute
+//------------------------------------------------------------------------
+
+/** Whether a drum's strip lets sound through, given which strips are
+    SOLOED and which are MUTED (one bit per column in each mask).
+
+    THE MIXER'S RULE, ONE COPY: the DSP gates each column by it and the
+    panel dims a strip by it, so the panel cannot show a drum as live
+    while the audio has it silent.
+
+      * MUTE WINS. A strip that is muted is silent, soloed or not - so a
+        muted strip can be soloed "ready" and stays quiet until unmuted.
+      * Any solo at all silences every strip that is not soloed.
+      * Several strips may be soloed at once; they all play. */
+inline constexpr bool stripAudible (int column, unsigned int soloMask, unsigned int muteMask)
+{
+	if (column < 0 || column >= kColumns)
+		return false;
+	const unsigned int bit = 1u << column;
+	if ((muteMask & bit) != 0u)
+		return false;
+	return soloMask == 0u || (soloMask & bit) != 0u;
+}
+
+//------------------------------------------------------------------------
 } // namespace SampleDrum

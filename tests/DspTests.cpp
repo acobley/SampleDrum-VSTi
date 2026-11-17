@@ -1800,6 +1800,218 @@ static void testPanelData ()
 	}
 }
 
+
+//------------------------------------------------------------------------
+// The drum strips: a level, a solo and a mute per drum
+//------------------------------------------------------------------------
+static void testDrumStrips ()
+{
+	std::printf ("drum strips: level, solo, mute\n");
+
+	// ---- the rule -------------------------------------------------------
+	{
+		bool all = true;
+		for (int c = 0; c < kColumns; ++c)
+			all = all && stripAudible (c, 0u, 0u);
+		check (all, "nothing soloed or muted: every strip sounds");
+
+		const unsigned snare = 1u << 1, clap = 1u << 2;
+		check (!stripAudible (1, 0u, snare) && stripAudible (0, 0u, snare) && stripAudible (2, 0u, snare),
+		       "a mute silences its own strip only");
+		check (stripAudible (1, snare, 0u) && !stripAudible (0, snare, 0u) && !stripAudible (7, snare, 0u),
+		       "a solo silences every strip not soloed");
+		check (stripAudible (1, snare | clap, 0u) && stripAudible (2, snare | clap, 0u) && !stripAudible (3, snare | clap, 0u),
+		       "two solos: both play");
+		check (!stripAudible (1, snare, snare) && !stripAudible (0, snare, snare),
+		       "MUTE WINS: a soloed, muted strip is silent, and its solo still silences the rest");
+		check (!stripAudible (-1, 0u, 0u) && !stripAudible (kColumns, 0u, 0u), "out-of-range columns are silent");
+	}
+
+	// ---- the level law --------------------------------------------------
+	check (drumLevelGain (0.0) == 1.0, "a drum at 0 dB is exactly unity");
+	check (drumLevelGain (3e-6) == 1.0 && drumLevelGain (-3e-6) == 1.0,
+	       "and so is 0 dB after a host's float automation");
+	check (drumLevelGain (kDrumLevelMinDb) == 0.0, "the bottom of a drum's knob is silence");
+	checkClose (drumLevelGain (-6.0), dbToGain (-6.0), 1e-12, "-6 dB");
+	checkClose (drumLevelGain (40.0), dbToGain (kDrumLevelMaxDb), 1e-12, "clamped at the top");
+
+	auto s = makeSample (48000, 0.5f);
+	auto playColumns = [&] (SampleDrumDsp& dsp)
+	{
+		for (int c = 0; c < kColumns; ++c)
+			dsp.setCellSample (cellIndex (c, 3), s.get ());
+	};
+
+	// ---- a drum's level scales its whole column, and only it -------------
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		auto quiet = makeSample (48000, 0.25f);
+		dsp.setCellSample (cellIndex (0, 0), quiet.get ());
+		dsp.setCellSample (cellIndex (0, 3), s.get ());
+		dsp.setCellSample (cellIndex (1, 3), s.get ());
+		dsp.setCellLevelDb (cellIndex (0, 3), -6.0);
+		dsp.setDrumLevelDb (0, -6.0);
+		dsp.reset ();
+
+		dsp.noteOn (36, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 256, 256);
+		checkClose (l[100], 0.5 * dbToGain (-12.0), 1e-6, "cell -6 dB and drum -6 dB: the hit is at -12 dB");
+
+		SampleDrumDsp soft;
+		soft.setSampleRate (48000.0);
+		soft.setCellSample (cellIndex (0, 0), quiet.get ());
+		soft.setDrumLevelDb (0, -6.0);
+		soft.reset ();
+		soft.noteOn (36, velocityFor (10), 0);
+		renderInto (soft, l, r, 256, 256);
+		checkClose (l[100], 0.25 * dbToGain (-6.0), 1e-6, "the drum's level reaches every row of its column");
+
+		SampleDrumDsp other;
+		other.setSampleRate (48000.0);
+		other.setCellSample (cellIndex (1, 3), s.get ());
+		other.setDrumLevelDb (0, -20.0);
+		other.reset ();
+		other.noteOn (38, 1.f, 0);
+		renderInto (other, l, r, 256, 256);
+		check (l[100] == 0.5f, "the snare is untouched by the kick's level, bit for bit");
+		check (other.drumLevelDb (0) == -20.0 && other.drumLevelDb (99) == kDrumLevelDefaultDb, "drumLevelDb reads back; bad columns are safe");
+
+		SampleDrumDsp bottom;
+		bottom.setSampleRate (48000.0);
+		bottom.setCellSample (0, s.get ());
+		bottom.setDrumLevelDb (0, kDrumLevelMinDb);
+		bottom.reset ();
+		bottom.noteOn (36, 0.1f, 0);
+		renderInto (bottom, l, r, 512, 256);
+		check (peakOf (l) == 0.f, "a drum turned to the bottom is exactly silent");
+	}
+
+	// ---- defaults, and a mute undone, are bit-identical ------------------
+	{
+		auto shaped = makeShapedSample (4000);
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		dsp.setCellSample (cellIndex (0, 3), shaped.get ());
+		dsp.setDrumMute (0, true);
+		dsp.setDrumSolo (3, true);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 2048, 256);
+		dsp.setDrumMute (0, false);
+		dsp.setDrumSolo (3, false);
+		renderInto (dsp, l, r, 2048, 256);   // the gates ramp back open
+		dsp.noteOn (36, 1.f, 0);
+		renderInto (dsp, l, r, 4000, 256);
+		bool same = true;
+		for (int i = 0; i < 4000; ++i)
+			same = same && l[i] == shaped->samples[i * 2] && r[i] == shaped->samples[i * 2 + 1];
+		check (same && dsp.currentStripGate (0) == 1.f, "muted, soloed elsewhere and undone: the hit is the file's own samples again");
+	}
+
+	// ---- mute: silent, the neighbours untouched, a 5 ms ramp at any block size
+	for (double rate : kRates)
+		for (int block : { 32, 512, 4096 })
+		{
+			SampleDrumDsp dsp;
+			dsp.setSampleRate (rate);
+			auto held = makeSample (static_cast<int> (rate), 0.5f, rate);
+			dsp.setCellSample (cellIndex (0, 3), held.get ());
+			dsp.setCellSample (cellIndex (1, 3), held.get ());
+			dsp.noteOn (36, 1.f, 0);
+			std::vector<float> l, r;
+			renderInto (dsp, l, r, 1024, 1024);
+
+			dsp.setDrumMute (0, true);
+			renderInto (dsp, l, r, static_cast<int> (rate * 0.1), block);
+			const int fade = static_cast<int> (kStripGateSeconds * rate);
+			float worst = 0.f;
+			int silentFrom = -1;
+			for (std::size_t i = 1; i < l.size (); ++i)
+				worst = std::max (worst, std::fabs (l[i] - l[i - 1]));
+			for (std::size_t i = 0; i < l.size () && silentFrom < 0; ++i)
+				if (l[i] == 0.f)
+					silentFrom = static_cast<int> (i);
+			const std::string at = " at " + str (static_cast<int> (rate)) + ", blocks of " + str (block);
+			check (std::fabs (l[0] - 0.5f) < 0.5f * 1.5f / fade && worst <= 0.5f * 1.01f / fade,
+			       "a mute ramps down linearly, no step bigger than the ramp's" + at);
+			check (silentFrom >= fade - 2 && silentFrom <= fade + 1 && peakOf (l, silentFrom) == 0.f,
+			       "and is EXACTLY silent after 5 ms, whatever the block size" + at);
+
+			dsp.setDrumMute (0, false);
+			renderInto (dsp, l, r, fade + 64, block);
+			check (l.back () == 0.5f && dsp.currentStripGate (0) == 1.f,
+			       "unmuted mid-hit, the sound comes back where it has got to, at exactly unity" + at);
+		}
+
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		playColumns (dsp);
+		dsp.setDrumMute (0, true);
+		dsp.reset ();
+		check (dsp.currentStripGate (0) == 0.f && dsp.currentStripGate (1) == 1.f, "reset snaps the gates (a reopened project's muted drum is shut from its first sample)");
+
+		dsp.noteOn (36, 1.f, 0);
+		dsp.noteOn (38, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 256);
+		check (l[0] == 0.5f && l[300] == 0.5f, "kick muted, snare hit: only the snare, at unity from sample 0");
+		check (dsp.cellSounding (cellIndex (0, 3)) && dsp.voicesSounding () == 2,
+		       "the muted kick still plays, silently - it lights and counts as a voice");
+
+		dsp.auditionCell (cellIndex (0, 3));
+		SampleDrumDsp quiet;
+		quiet.setSampleRate (48000.0);
+		quiet.setCellSample (0, s.get ());
+		quiet.setDrumMute (0, true);
+		quiet.reset ();
+		quiet.auditionCell (0);
+		renderInto (quiet, l, r, 512, 256);
+		check (peakOf (l) == 0.f, "a click on a muted drum's cell is silent: auditions go through the strip");
+	}
+
+	// ---- solo ------------------------------------------------------------
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		playColumns (dsp);
+		dsp.setDrumSolo (1, true);
+		dsp.reset ();
+		dsp.noteOn (36, 1.f, 0);
+		dsp.noteOn (38, 1.f, 0);
+		dsp.noteOn (39, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 256);
+		check (l[100] == 0.5f, "snare soloed: kick, snare and clap hit, only the snare is heard");
+
+		dsp.setDrumSolo (2, true);
+		renderInto (dsp, l, r, 1024, 256);
+		check (l.back () == 1.0f, "clap soloed too: snare and clap");
+
+		dsp.setDrumMute (2, true);
+		renderInto (dsp, l, r, 1024, 256);
+		check (l.back () == 0.5f, "the clap muted as well: mute wins, the snare stays");
+		check (dsp.drumSolo (2) && dsp.drumMute (2) && !dsp.drumSolo (0) && !dsp.drumMute (99), "solo and mute read back; bad columns are safe");
+	}
+
+	// ---- the choke still works from a silent closed hat ------------------
+	{
+		SampleDrumDsp dsp;
+		dsp.setSampleRate (48000.0);
+		playColumns (dsp);
+		dsp.setDrumSolo (4, true);   // open hat soloed
+		dsp.reset ();
+		dsp.noteOn (46, 1.f, 0);
+		std::vector<float> l, r;
+		renderInto (dsp, l, r, 512, 512);
+		dsp.noteOn (42, 1.f, 0);   // the closed hat, unheard
+		renderInto (dsp, l, r, 1024, 512);
+		check (l[0] > 0.f && l.back () == 0.f,
+		       "a soloed open hat is still choked by the closed hat it cannot hear - as it is in the mix");
+	}
+}
+
 int main ()
 {
 	std::printf ("SampleDrum DSP tests\n");
@@ -1824,6 +2036,7 @@ int main ()
 	testDegenerateBlocks ();
 	testCellLevels ();
 	testColumnNotes ();
+	testDrumStrips ();
 	testIsolator ();
 	testPanelData ();
 	measureLevels ();

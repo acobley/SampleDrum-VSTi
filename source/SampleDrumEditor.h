@@ -1,7 +1,7 @@
 //------------------------------------------------------------------------
 // SampleDrum - the panel: the Polivoks black panel, design 2
 //
-//     Designs/SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png, 1200 x 640
+//     Designs/SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png, 1200 x 700
 //
 //     SAMPLE DRUM | 48000 HZ / 32 VOICES / 29 OF 32 CELLS        VOICES [.....]
 //     +------+ +------+          ... eight strips ...   +--------------------+
@@ -11,8 +11,11 @@
 //     | [ 32-63 ]                                         | [ response       ] |
 //     | [ 64-95 ]                                         |  BASS     TREBLE   |
 //     | [ 96-127]                                         | trim      [meter]  |
-//     |  o HIT                                            | o OVER  HAT CHOKE  |
-//     +------+                                            | o BYPASS           |
+//     |------|                                            | o OVER             |
+//     | (o) DRUM LEVEL                                    | HAT CHOKE          |
+//     | o    o    o                                       | o BYPASS           |
+//     | SOLO MUTE HIT                                     +--------------------+
+//     +------+
 //
 // HOW IT IS BUILT - ForTran's Polivoks method (ForTran-VSTi/README.md):
 // everything that never changes (boxes, titles, legends, printed knob
@@ -28,8 +31,11 @@
 // SampleDrumNoteBox), its four velocity cells soft to hard
 // (SampleDrumCellView - drop, click, drag, right-click as before), a level
 // KNOB under each cell (the cell's level parameter, the bar's replacement)
-// with its value beside it, and a HIT lamp that lights when any cell in the
-// column is struck.
+// with its value beside it, and at the foot THE DRUM'S OWN STRIP: a DRUM
+// LEVEL knob (after the four cell levels), a SOLO lamp (amber) and a MUTE
+// lamp (red) that are switches, and the HIT lamp, which lights when any cell
+// in the column is struck - muted or not. A strip that stripAudible() says is
+// silent shows its drum level dimmed, so a solo elsewhere is visible here.
 //
 // THE MASTER STRIP: the last cell struck (waveform, playhead, drum, band,
 // file, velocity), the OUTPUT ISOLATOR (its response, and Bass, Bass Freq,
@@ -99,7 +105,7 @@ public:
 	// Layout - d2p.js's numbers, in one place
 	//--------------------------------------------------------------------
 	static constexpr int kEditorWidth  = 1200;
-	static constexpr int kEditorHeight = 640;
+	static constexpr int kEditorHeight = 700;
 
 	static constexpr double kStripLeft   = 16.;    // SX(c) = 16 + c * 118
 	static constexpr double kStripPitch  = 118.;
@@ -113,7 +119,16 @@ public:
 	static constexpr double kNoteWidth   = 92.;
 	static constexpr double kNoteHeight  = 18.;
 	static constexpr double kLevelOuter  = 12.;    // knob (ox + 14, y + OH + 22)
-	static constexpr double kHitLampY    = 604.;   // lamp (x + 22, 604)
+	// The drum's strip, at the foot (PORTING-NOTES §17)
+	static constexpr double kDrumKnobDx    = 22.;   // knob (x + 22, 622, 14)
+	static constexpr double kDrumKnobY     = 622.;
+	static constexpr double kDrumKnobOuter = 14.;
+	static constexpr double kDrumValueDx   = 42.;   // value at (x + 42, 620)
+	static constexpr double kDrumValueY    = 620.;
+	static constexpr double kStripLampY    = 652.;  // SOLO / MUTE / HIT lamps
+	static constexpr double kSoloLampDx    = 22.;
+	static constexpr double kMuteLampDx    = 55.;
+	static constexpr double kHitLampDx     = 88.;
 
 	static double stripX (int column) { return kStripLeft + column * kStripPitch; }
 	/** The cell's SCREEN (the view is kGlowMargin bigger). */
@@ -150,6 +165,9 @@ private:
 	void refreshHeader ();
 	void refreshLastHit ();
 
+	/** Dim each strip's drum level where stripAudible() says it is silent. */
+	void refreshStrips ();
+
 	/** Mark every note box whose note another column shares. */
 	void refreshSharedNotes ();
 	void onTimer ();
@@ -165,6 +183,10 @@ private:
 	PvText*             mLevelText[kCellCount] = {};
 	SampleDrumNoteBox*  mNotes[kColumns] = {};
 	PvLamp*             mHitLamps[kColumns] = {};
+	PvKnob*             mDrumLevels[kColumns] = {};
+	PvText*             mDrumLevelText[kColumns] = {};
+	PvLamp*             mSolo[kColumns] = {};
+	PvLamp*             mMute[kColumns] = {};
 
 	/** Bass, Bass Freq, Treble, Treble Freq - in kIsolatorTags order. */
 	static constexpr Steinberg::Vst::ParamID kIsolatorTags[4] = { kBassGain, kBassFreq, kTrebleGain, kTrebleFreq };

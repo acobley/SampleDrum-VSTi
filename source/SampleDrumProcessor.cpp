@@ -154,6 +154,23 @@ void SampleDrumProcessor::applyParam (ParamID id, double normalized)
 		return;
 	}
 
+	// THE DRUM STRIPS, by range: a level, a solo and a mute per column.
+	if (const int column = columnOfDrumLevelParam (id); column >= 0)
+	{
+		mDsp.setDrumLevelDb (column, def.toInternal (normalized));
+		return;
+	}
+	if (const int column = columnOfDrumSoloParam (id); column >= 0)
+	{
+		mDsp.setDrumSolo (column, def.toInternal (normalized) >= 0.5);
+		return;
+	}
+	if (const int column = columnOfDrumMuteParam (id); column >= 0)
+	{
+		mDsp.setDrumMute (column, def.toInternal (normalized) >= 0.5);
+		return;
+	}
+
 	switch (id)
 	{
 		case kOutputTrim:

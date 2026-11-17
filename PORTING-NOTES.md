@@ -778,3 +778,60 @@ The hand checks, for the next change that touches the panel:
 
 **Version: 1.1.0.0** — the isolator's four parameters and the new panel; a minor bump, as ForTran's
 Polivoks panel was. Notes in `installer/release-notes-1.1.0.0.md`; `tools/check-versions.py` agrees.
+
+## 17. Drum strips: a level, SOLO and MUTE per drum (2026-11-17, branch `drum-strips`)
+
+Each column's strip gains a foot: a **DRUM LEVEL** knob, a **SOLO** lamp (amber) and a **MUTE** lamp (red), both
+switches, beside the existing **HIT** lamp.
+
+| | Decision | Why |
+|---|---|---|
+| Parameters | **24, appended**: ids **45–52** drum levels, **53–60** solos, **61–68** mutes, each block in column order (`drumLevelParam`, `drumSoloParam`, `drumMuteParam`; `columnOfDrum…Param` by range). Titles "Kick Level", "Closed HH Solo", "Crash Mute". **All automatable** — a mute on the beat is a performance gesture. `kStateVersion` stays 1. | Append, never insert. A 1.1.0.0 project (45 parameters) opens with every strip at 0 dB, unsoloed, unmuted: it sounds as it did. |
+| Drum level | −40…+12 dB, **bottom = silence**, the cell levels' law. **Multiplies into each of the column's four cell gain targets** (`retargetCell`) and rides the cells' own 20 ms smoothing. `drumLevelGain` snaps within 0.001 dB of 0 dB to exactly 1. | No second smoother; two voices on one cell still hear one gain. The snap for the isolator's reason: 0 dB through a host's float automation is 3e-6 dB, and anything but exact unity ends the bit-identity of a hit. |
+| The rule | **`stripAudible (column, soloMask, muteMask)`** in `SampleDrumKit.h`: **mute wins**; any solo silences every strip not soloed; several solos all play. The DSP gates by it and the panel dims a strip's level readout by it. | One copy (§3). Mute-wins lets a strip be soloed "ready" while muted. |
+| Gate | Per column, a **5 ms linear ramp** (`kStripGateSeconds`), per sample and **clamped at its target**, so 5 ms whatever the block size; lands exactly on 0 or 1. Skipped when open and settled. `reset()` snaps it, so a reopened project's muted drum is shut from its first sample. | The levels' 20 ms one-pole is still −9 dB 20 ms after a mute — it reads as soft. The ramp is the choke's length. |
+| Voices on a shut strip | **Keep playing, silently**: they count as voices, light their cells and the HIT lamp, and the closed hat **still chokes** the open one. Unmuting mid-hit brings the sound back where it has got to. | A soloed open hat is cut as it is in the mix. HIT showing MIDI arriving on a muted drum is useful. |
+| Auditions | **Go through the strip**: clicking a muted drum's cell is silent. | It is a mixer. Change by giving audition voices their own path past the gate if it annoys in use. |
+| Host text | Levels print a number even at the bottom (as the cell levels); solo/mute print "On"/"Off", and **`fromString` reads "On"/"Off" back** as well as a number. | The validator's text round trip. |
+
+**Panel.** The editor is **1200 × 700** (60 px taller). Each strip box runs to 684: a rule at 592, the drum knob at
+(x+22, 622) outer 14 with its value at (x+42, 620) and DRUM LEVEL printed under it, then three lamps at y 652 —
+SOLO x+22, MUTE x+55, HIT x+88 — names centred under them at 670. Master: meter 394–588 (194 high), trim knob at
+(1018, 462), value 495, OVER 564, rule 600, HAT CHOKE 620/636, BYPASS 660. `PvLamp::setColours` added for the amber
+solo jewel (`Pv::kSoloOn/Off` = d2p.js `SOLO_LAMP`). The panel height is now `window.PANEL_H` in d2p.js, read by
+`pv.js` (`PH()`, default 640, so ForTran's copy is unaffected if back-ported) and by `render-panel.py`.
+`resource/pv_panel.png`, `pv_wear.png` and `Designs/…-2-ChannelStrips-NearlyNew.png` (the full render with the
+wear laid over it) were re-rendered in the cloud workspace; the demo mutes the crash.
+
+### Verification (from the Linux VM)
+
+All 15 `.cpp` files compile against the SDK and VSTGUI (`-Wall -Wextra`, nothing new in our code); **0
+unresolved `SampleDrum::` symbols** out of 105. `tools/run-tests.sh`: all suites pass.
+
+**DSP: 658 / 0** (578 before) — `testDrumStrips`: the rule's truth table (mute wins, two solos, out of range);
+the level law (0 dB and ±3e-6 dB exactly 1, bottom silent, clamp); cell −6 + drum −6 = −12 dB; the drum level
+reaches every row and leaves the neighbour bit-identical; muted, soloed elsewhere and undone → the file's own
+samples; at every rate 44.1–192 k and blocks of 32, 512 and 4096, a mute ramps with no step bigger than the
+ramp's, is **exactly** silent after 5 ms, and unmuted comes back at exactly unity; reset snaps the gates; a
+muted kick still sounds as a voice; a muted audition is silent; solo, two solos, solo + mute; a soloed open hat
+is still choked. **Negative controls** on throwaway copies: with the gate not applied, and with the gate jumping
+instead of ramping, the mute checks fail.
+
+**State: 35 / 0** (29 before) — a 45-parameter project reads with every strip at its defaults; drum levels default
+to exactly unity even through a float; titles, ids, switch types and the disjoint ranges.
+
+**Not verified here:** the build, the validator, `auval`, the panel on screen.
+
+### To check by hand on the Mac
+
+1. `./setup-xcode.sh --no-open` (no new files, but the two PNGs changed size), build, validator,
+   `auval -v aumu SmDr AECo`.
+2. The editor opens 700 high and nothing is offset from the printed rule, knob scales and lamp names.
+3. Turn a DRUM LEVEL: the whole column follows; the bottom reads "OFF" and is silent; Alt-click → 0 dB.
+4. MUTE a drum: silent within a beat, no click, HIT still flashes; unmute mid-cymbal: it comes back.
+5. SOLO one drum: the others' DRUM LEVEL readouts dim and go silent; solo a second: both play; mute a
+   soloed one: it goes quiet, the rest stay off.
+6. Automate a mute on the beat, and a drum level sweep: no clicks, and the lamps/knobs follow.
+7. The host's generic editor: "On"/"Off" for solo and mute; type "on" into one.
+8. Open a 1.1.0.0 project: it sounds the same, every strip at 0 dB and unlit.
+9. Record the results here, then bump the version (24 new parameters: **1.2.0.0**).

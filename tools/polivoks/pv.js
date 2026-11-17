@@ -120,12 +120,14 @@ function fader(cx, top, bot, frac, o = {}) {
 }
 
 // ------------------------------------------------------------- lamps
-function lamp(cx, cy, on, r = 4.2) {
+// col: the lamp's lit / unlit colours, red by default ({ on, off }).
+function lamp(cx, cy, on, r = 4.2, col = {}) {
   LY.lamps.push({ cx, cy, r });
+  const lon = col.on || T.lampOn, loff = col.off || T.lampOff;
   dyn (() => {
   circle(cx, cy, r + 1.6, '#000', '#555', 0.8);
-  if (on) circle(cx, cy, r + 4, hexA(T.lampOn, 0.22));
-  circle(cx, cy, r, on ? T.lampOn : T.lampOff);
+  if (on) circle(cx, cy, r + 4, hexA(lon, 0.22));
+  circle(cx, cy, r, on ? lon : loff);
   circle(cx - r * 0.3, cy - r * 0.3, r * 0.32, '#fff', null, 0, `opacity="${on ? 0.55 : 0.22}"`);
   });
 }
@@ -240,11 +242,14 @@ function filterOled(x, y, w, h, o = {}) {
 }
 
 // ------------------------------------------------------------- header
+// The panel's height: 640 unless the design says otherwise (window.PANEL_H,
+// set before this file runs - SampleDrum's d2p.js makes it 700).
+const PH = () => window.PANEL_H || 640;
 function header(engine, o = {}) {
-  rect(0, 0, 1200, 640, T.ground);
+  rect(0, 0, 1200, PH(), T.ground);
   rect(0, 0, 1200, 56, T.header);
   line(0, 55, 1200, 55, T.headerRule, 2);
-  for (const [x, y] of [[8, 8], [1192, 8], [8, 632], [1192, 632]]) {
+  for (const [x, y] of [[8, 8], [1192, 8], [8, PH() - 8], [1192, PH() - 8]]) {
     circle(x, y, 3.2, '#3a3a3a', '#000', 0.6); line(x - 2.2, y - 2.2, x + 2.2, y + 2.2, '#222', 0.8);
     LY.screws.push([x, y]);
   }
@@ -286,7 +291,7 @@ function render() {
   <linearGradient id="fadergrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3a3a3a"/><stop offset="0.5" stop-color="#161616"/><stop offset="1" stop-color="#060606"/></linearGradient>
   <filter id="bloom" x="-5%" y="-20%" width="110%" height="140%"><feGaussianBlur stdDeviation="0.9" result="b"/><feComponentTransfer in="b" result="c"><feFuncA type="linear" slope="0.7"/></feComponentTransfer><feMerge><feMergeNode in="c"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   ${defs.join('')}</defs>`;
-  document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" style="display:block">${d}${out.join('')}</svg>`;
+  document.body.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="${PH()}" viewBox="0 0 1200 ${PH()}" style="display:block">${d}${out.join('')}</svg>`;
   const wm = document.getElementById('wm');
   const big = (t, col, x) => { const a = rbPaths(t, 24, 1.7, 1.2); return { a, svg: `<g transform="translate(${x},0)"><g fill="none" stroke="${col}" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${a.paths}</g><g fill="none" stroke="#0c0c0c" stroke-width=".32" stroke-linecap="round" stroke-linejoin="round">${a.paths}</g></g>` }; };
   const WT = window.WMT || ['FOR', 'TRAN'];

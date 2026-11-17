@@ -286,7 +286,12 @@ SampleDrumDsp::SampleDrumDsp ()
 	}
 
 	for (int column = 0; column < kColumns; ++column)
+	{
 		mColumnNote[column] = kDrumMap[column].note;
+		mDrumLevelDb[column] = kDrumLevelDefaultDb;
+		mGate[column] = mGateTarget[column] = mGateStart[column] = 1.f;
+		mGateStep[column] = 0.f;
+	}
 
 	// Usable before setupProcessing, because a host may call process()
 	// first in the rare restart. setSampleRate replaces the guess.
@@ -307,6 +312,7 @@ void SampleDrumDsp::setSampleRate (double sampleRate)
 	mTrim.setSampleRate (mSampleRate, kTrimSmoothingSeconds);
 	mFadeSamples = std::max (1, static_cast<int> (kChokeFadeSeconds * mSampleRate + 0.5));
 	mCellLevelCoeff = 1.0 - std::exp (-1.0 / (kCellLevelSmoothingSeconds * mSampleRate));
+	mGateStepPerSample = static_cast<float> (1.0 / std::max (1.0, kStripGateSeconds * mSampleRate));
 	mIsolator.setSampleRate (mSampleRate);
 
 	// The band-limited read's banks: sized here, off the audio thread, and
@@ -369,6 +375,14 @@ void SampleDrumDsp::reset ()
 	for (int cell = 0; cell < kCellCount; ++cell)
 		mCellGain[cell] = mCellGainStart[cell] = mCellGainEnd[cell] = mCellTarget[cell];
 
+	// And the strips' gates, so a project reopened with a drum muted does
+	// not let its first hit through for 5 ms.
+	for (int column = 0; column < kColumns; ++column)
+	{
+		mGate[column] = mGateStart[column] = mGateTarget[column];
+		mGateStep[column] = 0.f;
+	}
+
 	for (auto& sounding : mSounding)
 		sounding.store (false, std::memory_order_relaxed);
 	mVoicesSounding.store (0, std::memory_order_relaxed);
@@ -391,7 +405,106 @@ void SampleDrumDsp::setCellLevelDb (int cell, double db)
 	if (!isCellIndex (cell))
 		return;
 	mCellLevelDb[cell] = db;
-	mCellTarget[cell]  = static_cast<float> (cellLevelGain (db));
+	retargetCell (cell);
+}
+
+//------------------------------------------------------------------------
+double drumLevelGain (double db)
+{
+	if (std::fabs (db) < kIsolatorUnitySnapDb)
+		return 1.0;
+	return cellLevelGain (std::min (kDrumLevelMaxDb, db));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::retargetCell (int cell)
+{
+	// The cell's level times its DRUM's level, in double, rounded once.
+	// Both exactly 1 at 0 dB, so the product is exactly 1 and a hit at
+	// defaults stays the file's own samples.
+	mCellTarget[cell] = static_cast<float> (cellLevelGain (mCellLevelDb[cell])
+	                                        * drumLevelGain (mDrumLevelDb[columnOfCell (cell)]));
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::setDrumLevelDb (int column, double db)
+{
+	if (column < 0 || column >= kColumns)
+		return;
+	mDrumLevelDb[column] = db;
+	for (int row = 0; row < kRows; ++row)
+		retargetCell (cellIndex (column, row));
+}
+
+//------------------------------------------------------------------------
+double SampleDrumDsp::drumLevelDb (int column) const
+{
+	return (column >= 0 && column < kColumns) ? mDrumLevelDb[column] : kDrumLevelDefaultDb;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::setDrumSolo (int column, bool on)
+{
+	if (column < 0 || column >= kColumns)
+		return;
+	mSoloMask = on ? (mSoloMask | (1u << column)) : (mSoloMask & ~(1u << column));
+	retargetGates ();   // one solo changes EVERY strip
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::setDrumMute (int column, bool on)
+{
+	if (column < 0 || column >= kColumns)
+		return;
+	mMuteMask = on ? (mMuteMask | (1u << column)) : (mMuteMask & ~(1u << column));
+	retargetGates ();
+}
+
+//------------------------------------------------------------------------
+bool SampleDrumDsp::drumSolo (int column) const
+{
+	return column >= 0 && column < kColumns && (mSoloMask & (1u << column)) != 0u;
+}
+
+bool SampleDrumDsp::drumMute (int column) const
+{
+	return column >= 0 && column < kColumns && (mMuteMask & (1u << column)) != 0u;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::retargetGates ()
+{
+	for (int column = 0; column < kColumns; ++column)
+		mGateTarget[column] = stripAudible (column, mSoloMask, mMuteMask) ? 1.f : 0.f;
+}
+
+//------------------------------------------------------------------------
+float SampleDrumDsp::currentStripGate (int column) const
+{
+	return (column >= 0 && column < kColumns) ? mGate[column] : 0.f;
+}
+
+//------------------------------------------------------------------------
+void SampleDrumDsp::advanceStripGates (int numSamples)
+{
+	for (int column = 0; column < kColumns; ++column)
+	{
+		const float start = mGate[column], target = mGateTarget[column];
+		float step = 0.f, end = start;
+		if (target > start)
+		{
+			step = mGateStepPerSample;
+			end = std::min (target, start + step * static_cast<float> (numSamples));
+		}
+		else if (target < start)
+		{
+			step = -mGateStepPerSample;
+			end = std::max (target, start + step * static_cast<float> (numSamples));
+		}
+		mGateStart[column] = start;
+		mGateStep[column]  = step;
+		mGate[column]      = end;   // lands EXACTLY on 0 or 1: clamped
+	}
 }
 
 //------------------------------------------------------------------------
@@ -684,6 +797,15 @@ void SampleDrumDsp::renderVoices (float* left, float* right, int from, int to)
 			? (mCellGainEnd[voice.cell] - gainStart) / static_cast<float> (mBlockLength)
 			: 0.f;
 
+		// THE STRIP'S GATE (solo / mute), a 5 ms linear ramp clamped at
+		// its target. Open and settled - the usual case - it is skipped,
+		// so a hit at defaults is still the file's own samples.
+		const int    column     = columnOfCell (voice.cell);
+		const float  gateStart  = mGateStart[column];
+		const float  gateStep   = mGateStep[column];
+		const float  gateTarget = mGateTarget[column];
+		const bool   gated      = !(gateStep == 0.f && gateStart == 1.f);
+
 		for (int i = from; i < to; ++i)
 		{
 			const int frame = static_cast<int> (voice.position);
@@ -695,7 +817,14 @@ void SampleDrumDsp::renderVoices (float* left, float* right, int from, int to)
 
 			// At a settled level gainStep is exactly 0 and the gain is the
 			// target itself - 1.0 at 0 dB, so unity stays bit-identical.
-			const float gain = gainStart + gainStep * static_cast<float> (i + 1);
+			float gain = gainStart + gainStep * static_cast<float> (i + 1);
+			if (gated)
+			{
+				float gate = gateStart + gateStep * static_cast<float> (i + 1);
+				if (gateStep > 0.f ? gate > gateTarget : gate < gateTarget)
+					gate = gateTarget;
+				gain *= gate;
+			}
 
 			float l, r;
 			if (voice.bank >= 0)
@@ -765,6 +894,7 @@ void SampleDrumDsp::render (float* left, float* right, int numSamples)
 
 	mBlockLength = numSamples;
 	advanceCellGains (numSamples);
+	advanceStripGates (numSamples);
 
 	// SAMPLE-ACCURATE: render up to each hit's offset, start it, carry on.
 	// An offset past the end of this block is a host bug; it plays on the

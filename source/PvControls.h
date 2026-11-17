@@ -51,6 +51,9 @@ inline const VSTGUI::CColor kTick     { 0xe9, 0xe6, 0xdc, 0xff };
 inline const VSTGUI::CColor kRed      { 0xe2, 0x34, 0x2b, 0xff };
 inline const VSTGUI::CColor kLampOn   { 0xff, 0x3b, 0x2f, 0xff };
 inline const VSTGUI::CColor kLampOff  { 0x3a, 0x15, 0x12, 0xff };
+/** The SOLO lamp's jewel (d2p.js SOLO_LAMP): amber where the others are red. */
+inline const VSTGUI::CColor kSoloOn   { 0xff, 0xb8, 0x1c, 0xff };
+inline const VSTGUI::CColor kSoloOff  { 0x3a, 0x2a, 0x0c, 0xff };
 inline const VSTGUI::CColor kStroke   { 0xcf, 0xcc, 0xc4, 0xff };
 inline const VSTGUI::CColor kPanel    { 0x12, 0x12, 0x12, 0xff };
 inline const VSTGUI::CColor kOledText { 0x8d, 0x96, 0xa3, 0xff };
@@ -109,6 +112,10 @@ public:
 
 	void setHoverListener (IHoverListener* l) { mHover = l; }
 
+	/** The jewel's lit and unlit colours - red unless set (the SOLO lamps
+	    are amber, d2p.js's SOLO_LAMP). */
+	void setColours (const VSTGUI::CColor& on, const VSTGUI::CColor& off) { mOn = on; mOff = off; }
+
 	void draw (VSTGUI::CDrawContext* context) override;
 	void onMouseDownEvent (VSTGUI::MouseDownEvent& event) override;
 	void onMouseEnterEvent (VSTGUI::MouseEnterEvent& event) override;
@@ -118,6 +125,7 @@ public:
 
 private:
 	IHoverListener* mHover = nullptr;
+	VSTGUI::CColor mOn = Pv::kLampOn, mOff = Pv::kLampOff;
 };
 
 //------------------------------------------------------------------------

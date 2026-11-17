@@ -13,6 +13,7 @@
 #include "pluginterfaces/base/ustring.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -106,7 +107,7 @@ public:
 			// below; the panel says "kill".
 			std::snprintf (text, sizeof (text), "%+.1f", mDef.toPlain (normalized));
 		}
-		else if (isCellLevelParam (mDef.id))
+		else if (isCellLevelParam (mDef.id) || isDrumLevelParam (mDef.id))
 		{
 			// A NUMBER EVEN AT THE BOTTOM, where the cell is silent: the
 			// validator reads this text back through the default
@@ -120,6 +121,22 @@ public:
 		}
 
 		UString (string, str16BufferSize (String128)).assign (USTRING (text));
+	}
+
+	/** A SOLO or MUTE reads back its own "On" / "Off" as well as a number,
+	    so the host's text round trip (and the validator's) lands where it
+	    started. Everything else: the SDK's reading of the leading number. */
+	bool fromString (const TChar* string, ParamValue& normalized) const SMTG_OVERRIDE
+	{
+		if (mDef.type == ParamType::Bool && string != nullptr)
+		{
+			char ascii[16] = {};
+			for (int i = 0; i < 15 && string[i] != 0; ++i)
+				ascii[i] = static_cast<char> (std::tolower (static_cast<int> (string[i] & 0x7f)));
+			if (std::strcmp (ascii, "on") == 0)  { normalized = 1.0; return true; }
+			if (std::strcmp (ascii, "off") == 0) { normalized = 0.0; return true; }
+		}
+		return RangeParameter::fromString (string, normalized);
 	}
 
 private:

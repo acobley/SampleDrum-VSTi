@@ -9,6 +9,9 @@
 // background); without it, the whole thing with the demo kit, which is what
 // the wear pass is fitted to.
 window.WMT = ['SAMPLE', 'DRUM'];
+// 700 high since the drum strips (PORTING-NOTES §17): 60 px at the foot of
+// every strip for its level knob and its SOLO / MUTE lamps.
+window.PANEL_H = 700;
 OLED = { amber: '#ffae2e', blue: '#ffae2e', mint: '#ffae2e', violet: '#ffae2e', white: '#ffae2e' };
 header(`48000 HZ  /  32 VOICES  /  ${nLoaded()} OF 32 CELLS`,
        { wm: ['#f4f1e8', '#ffae2e'], divX: 330, segs: 32, lit: 2, vcol: '#ffae2e', voff: '#2a1f0e' });
@@ -17,7 +20,7 @@ const A = OLED.amber, SX = c => 16 + c * 118, SW = 110, RY = r => 146 + r * 112,
 const LIT = { '0,3': 0.2, '3,1': 0.6 };
 DRUMS.forEach((d, c) => {
   const x = SX(c);
-  section(x, 72, SW, 552, d.name.length > 8 ? d.short : d.name);
+  section(x, 72, SW, 612, d.name.length > 8 ? d.short : d.name);
   // note box: bezel here, "< 36 C1 >" drawn by SampleDrumNoteBox
   oled(x + SW / 2 - 46, 114, 92, 18);
   dyn (() => {
@@ -48,12 +51,22 @@ DRUMS.forEach((d, c) => {
     dyn (() => otext(ox + 34, y + OH + 20, dbTxt(db), T.ink, 'start', 8.5));
     text(ox + 34, y + OH + 31, 'LEVEL', { size: 7, weight: 400, fill: T.dim });
   }
-  lamp(x + 22, 604, c === 0 || c === 3);
-  text(x + 34, 607.5, 'HIT', { size: 8.5 });
+  // ---- the drum's own strip: level knob, then SOLO, MUTE and HIT ----------
+  rule(x + 8, 592, x + SW - 8, 592);
+  knob(x + 22, 622, 14, levelFrac(DRUM_DB[c]), null, null);
+  dyn (() => otext(x + 42, 620, dbTxt(DRUM_DB[c]), MUTE[c] ? T.dim : T.ink, 'start', 8.5));
+  text(x + 42, 631, 'DRUM LEVEL', { size: 7, weight: 400, fill: T.muted });
+  // Three lamps across the strip, each with its name centred under it.
+  lamp(x + 22, 652, SOLO[c], 4.2, SOLO_LAMP);
+  text(x + 22, 670, 'SOLO', { size: 7.5, anchor: 'middle' });
+  lamp(x + 55, 652, MUTE[c]);
+  text(x + 55, 670, 'MUTE', { size: 7.5, anchor: 'middle' });
+  lamp(x + 88, 652, c === 0 || c === 3);
+  text(x + 88, 670, 'HIT', { size: 7.5, anchor: 'middle' });
 });
 
 // ---- MASTER -------------------------------------------------------------
-section(964, 72, 220, 552, 'MASTER');
+section(964, 72, 220, 612, 'MASTER');
 oled(978, 106, 192, 84);
 otext(984, 118, 'LAST HIT', T.oledText, 'start', 7.5);
 dyn (() => {
@@ -76,14 +89,16 @@ line(1072, 304, 1072, 370, '#3a3a3a', 1);
 isoKnobs([[996, 332], [1040, 332], [1104, 332], [1150, 332]], 12, { labels: ['LEVEL', 'FREQ', 'LEVEL', 'FREQ'], vs: 7.5, ls: 8, vgap: 9, lgap: 10 });
 rule(978, 380, 1170, 380);
 
-knob(1018, 432, 22, 0.5, '-6.0 DB', 'OUTPUT TRIM', { bipolar: true });
-oled(1072, 394, 98, 134);
-dyn (() => outMeter(1072, 394, 98, 134, { bw: 20 }));
-lamp(992, 504, 0); text(1004, 507.5, 'OVER', { size: 8.5 });
-rule(978, 540, 1170, 540);
-sub(980, 560, 'HAT CHOKE', { size: 9.5 });
-otext(980, 576, 'CLOSED HH CUTS OPEN HH', T.muted, 'start', 8);
-lamp(992, 600, 0); text(1004, 603.5, 'BYPASS', { size: 9 });
-otext(1170, 603.5, 'KIT SAVED IN PROJECT', T.dim, 'end', 7);
+// The output block is 60 taller with the strips: the meter takes the height,
+// the trim and OVER move down to sit beside it, choke and bypass to the foot.
+knob(1018, 462, 22, 0.5, '-6.0 DB', 'OUTPUT TRIM', { bipolar: true });
+oled(1072, 394, 98, 194);
+dyn (() => outMeter(1072, 394, 98, 194, { bw: 20 }));
+lamp(992, 564, 0); text(1004, 567.5, 'OVER', { size: 8.5 });
+rule(978, 600, 1170, 600);
+sub(980, 620, 'HAT CHOKE', { size: 9.5 });
+otext(980, 636, 'CLOSED HH CUTS OPEN HH', T.muted, 'start', 8);
+lamp(992, 660, 0); text(1004, 663.5, 'BYPASS', { size: 9 });
+otext(1170, 663.5, 'KIT SAVED IN PROJECT', T.dim, 'end', 7);
 
 render();
