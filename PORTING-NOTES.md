@@ -846,6 +846,23 @@ this branch alongside.
 
 ## 18. Factory kits: `.vstpreset` in, `.aupreset` made (2026-11-17)
 
+**Update 2026-11-18, later: the kits are a SEPARATE INSTALLER.** The plug-in's package carries no presets
+(the `PRESETS` blocks are gone from `distribution.xml`). `build-installer.sh --kits` builds
+`installer/SampleDrum-Kits-<version>.pkg`: one component into `/Library/Audio/Presets/AE Cobley/SampleDrum`,
+its own `distribution-kits.xml` (`customize="never"`, macOS 12+) and panes (`resources/welcome-kits.html`,
+`conclusion-kits.html`); no build tree, no `--sign-app` (nothing in it is code; notarising needs only the
+Installer signature), no `.built-from`; refuses with no kits or a stale `.aupreset`. `build-release.sh
+--kits`: versions agree, `make-presets.py --check`, the Installer certificate looked up alone, the notary
+profile, build, SHA-256 — no tests, tag, notes or clean-tree check, since the kits are not in git and may
+follow a release. **`publish-release.sh` does not upload it** (`gh release upload v<version> …`). The
+plug-in's `build-release.sh` now clears `$NAME-[0-9]*.pkg`, not `$NAME-*.pkg`, so it no longer deletes a
+notarised kits package. `test-build-release.sh`: 28 cases (4 new: `--kits` signs with the installer
+certificate only; refuses a missing `.aupreset`; skips the tag/clean-tree checks; the plug-in's release
+leaves a kits package alone — negative control: with the old glob that last one fails). Checked with
+`build-installer.sh` against stubbed Apple tools: the plug-in's package holds VST3 + AU and no presets; the
+kits package holds only `SampleDrum-Presets.pkg`, signs, "notarises" and passes the Gatekeeper check without
+`--sign-app`; the plug-in's still refuses to notarise an ad-hoc payload.
+
 **Update 2026-11-18:** the four KItMachine kits were replaced by **56** (808, 909, acoustic, boomy, crisp,
 distorted, dull, lo-fi, metallic, muffled, punchy, tight, vintage-drum-machine, warm; 1–4 each), all passing
 `--check`. 1,792 distinct WAVs, 405 MB embedded; with the `.aupreset` copies (base64, a third bigger) the

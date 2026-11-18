@@ -45,9 +45,6 @@
         <!-- BEGIN SAMPLES -->
         <line choice="choice.samples"/>
         <!-- END SAMPLES -->
-        <!-- BEGIN PRESETS -->
-        <line choice="choice.presets"/>
-        <!-- END PRESETS -->
     </choices-outline>
 
     <choice id="choice.vst3"
@@ -88,22 +85,5 @@
              version="__VERSION__"
              onConclusion="none">SampleDrum-Samples.pkg</pkg-ref>
     <!-- END SAMPLES -->
-
-    <!-- BEGIN PRESETS -->
-    <!-- THE FACTORY KITS, as .vstpreset and .aupreset. Both formats read the
-         same folder, so one component serves the VST3 and the Audio Unit.
-         build-installer.sh deletes every block between these markers when
-         installer/presets is empty: a pkg-ref to a package that was never
-         built is what Installer reports as "pagecontroller error -1". -->
-    <choice id="choice.presets"
-            title="Factory kits"
-            description="Drum kits, samples included, installed into /Library/Audio/Presets/AE Cobley/SampleDrum, where both the VST3 and the Audio Unit look for presets.">
-        <pkg-ref id="audio.sampledrum.presets.pkg"/>
-    </choice>
-
-    <pkg-ref id="audio.sampledrum.presets.pkg"
-             version="__VERSION__"
-             onConclusion="none">SampleDrum-Presets.pkg</pkg-ref>
-    <!-- END PRESETS -->
 
 </installer-gui-script>

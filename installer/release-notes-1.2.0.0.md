@@ -20,10 +20,13 @@ A sample-based drum instrument for macOS, as a **VST3** and an
     **automatable**.
 - **The panel is 60 pixels taller** to make room; the output meter grew
   with it.
-- **56 factory kits** - 808, 909, acoustic, boomy, crisp, distorted, dull,
-  lo-fi, metallic, muffled, punchy, tight, vintage drum machine and warm,
-  four of each - every cell filled, samples included, so they play on any
-  Mac. They take about 900 MB; untick the choice if you don't want them. They appear in your host's preset
+- **56 factory kits, as a separate download** - 808, 909, acoustic, boomy,
+  crisp, distorted, dull, lo-fi, metallic, muffled, punchy, tight, vintage
+  drum machine and warm, four of each - every cell filled, samples included,
+  so they play on any Mac. They take about 900 MB, so they have their own
+  installer, `SampleDrum-Kits-1.2.0.0.pkg`; the plug-in's installer carries
+  no presets. They appear in your host's preset browser for both the VST3
+  and the Audio Unit. They appear in your host's preset
   browser for both the VST3 and the Audio Unit, installed as their own
   choice in the installer.
 - **macOS 12 or later is now required** (1.1.0.0 ran on 10.13). Current
@@ -73,9 +76,12 @@ format separately:
     /Library/Audio/Plug-Ins/VST3/SampleDrum.vst3
     /Library/Audio/Plug-Ins/Components/SampleDrum.component
 
-and the factory kits, for both formats, as a third choice:
+For the factory kits, also download `SampleDrum-Kits-1.2.0.0.pkg` and open
+it. It installs them, for both formats, into
 
     /Library/Audio/Presets/AE Cobley/SampleDrum
+
+and nothing else - SampleDrum itself comes from the first package.
 
 Quit your DAW first - a running host holds the old copy open. Signed with a
 Developer ID and notarised by Apple, so it installs without any

@@ -7,8 +7,9 @@
 
 as two separately choosable components, so somebody who only wants one format
 gets only that one — plus, when `samples/` has any `.wav` in it, the factory
-samples (see *Factory samples* below), and when `installer/presets/` has any
-presets, the factory kits (see *Factory kits* below).
+samples (see *Factory samples* below). It carries **no presets**: the factory
+kits are a separate package, `SampleDrum-Kits-<version>.pkg` (see *Factory
+kits* below).
 
 ## Releasing: two scripts, and what they refuse to do
 
@@ -417,18 +418,44 @@ Logic, and its `tools/make-presets.cpp` turns `.aupreset` into `.vstpreset`.
 Both files are **kept out of git** (`.gitignore`): 56 kits that each carry
 their samples come to about 918 MB. They live in `installer/presets/` on the
 machine that builds the release, so **back that folder up** — a release
-commit does not record which kits went into the package. Both are installed by
-a fourth component,
-**Factory kits**, into
+commit does not record which kits went into the package.
+
+**They ship as their own installer**, so the plug-in's package stays small
+and nobody downloads 900 MB to get the instrument:
+
+```sh
+installer/build-release.sh --kits              # checked, signed, notarised: installer/SampleDrum-Kits-<version>.pkg
+installer/build-release.sh --kits --unsigned   # local only
+installer/build-installer.sh --kits [--sign-installer … --notarize …]   # the step underneath
+```
+
+It has one component, **Factory kits**, its own panes
+(`resources/welcome-kits.html`, `resources/conclusion-kits.html`) and its own
+`distribution-kits.xml`, and installs into
 
     /Library/Audio/Presets/AE Cobley/SampleDrum
 
 which is the folder *each* format looks in: VST3 uses `$COMPANY/$PLUGIN-NAME`
 and an Audio Unit uses `<manufacturer>/<plug-in>` from the component's name,
-"AE Cobley: SampleDrum".
+"AE Cobley: SampleDrum". Things that differ from the plug-in's package:
+
+- **No code, so no Application certificate** — only `--sign-installer` and
+  `--notarize`, and `build-release.sh --kits` looks up only the Installer
+  certificate. No build tree is needed.
+- **No tests, tag, release-notes or clean-tree check** in `--kits`: the kits
+  are not in git, and a set may follow a release that is already out. It
+  does check the versions agree and that every `.aupreset` is current.
+- **No `.built-from`** — that file is what `publish-release.sh` tags, and it
+  belongs to the plug-in. **`publish-release.sh` does not upload the kits**:
+  add them to the release with
+  `gh release upload v<version> installer/SampleDrum-Kits-<version>.pkg`.
+- **The plug-in's `build-release.sh` no longer sweeps it away**: it clears
+  `SampleDrum-<digit>*.pkg`, not `SampleDrum-*.pkg`, so a notarised kits
+  package survives the next plug-in build.
 
 What is checked, by `make-presets.py`, by `tools/run-tests.sh`, by
-`build-installer.sh` before it packages anything, and by `build-release.sh`:
+`build-installer.sh --kits` before it packages anything, and by
+`build-release.sh` (both modes):
 
 - **The class ID** is SampleDrum's processor UID (read from
   `SampleDrumIDs.h`). A host silently ignores a `.vstpreset` whose UID does not
@@ -446,8 +473,8 @@ What is checked, by `make-presets.py`, by `tools/run-tests.sh`, by
   `Controller State` key, even empty. Without that key the wrapper never hands
   the state to the controller and the panel shows the previous kit.
 
-`installer/presets` empty is not an error: the component and every
-`BEGIN PRESETS`/`END PRESETS` block are left out.
+With `installer/presets` empty, `--kits` refuses: there would be nothing in
+the package.
 
 ## Before handing it to a tester
 

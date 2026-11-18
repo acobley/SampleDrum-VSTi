@@ -149,7 +149,7 @@ fi
 
 #-----------------------------------------------------------------------------
 echo
-echo "5b. Factory kits (presets)"
+echo "5b. Factory kits (presets) - from the separate SampleDrum-Kits package"
 #-----------------------------------------------------------------------------
 # One folder serves both formats: VST3 reads $COMPANY/$PLUGIN-NAME, and the
 # Audio Unit reads <manufacturer>/<plug-in> from the component's name, which
@@ -165,8 +165,8 @@ if [ -d "$PRESETS" ]; then
         note "every kit should ship as both, or one format is short"
     fi
 else
-    note "no factory kits installed - either none were packaged, or the"
-    note "  choice was turned off during the install"
+    note "no factory kits installed - they are a separate package,"
+    note "  SampleDrum-Kits-<version>.pkg, and the plug-in's carries none"
 fi
 
 #-----------------------------------------------------------------------------

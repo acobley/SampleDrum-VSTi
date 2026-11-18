@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The FACTORY KITS installer: build-installer.sh in its kits mode. One component, the
+    presets, and nothing else - the plug-in's own installer (distribution.xml)
+    carries no presets at all. __VERSION__ is substituted from CMakeLists.txt.
+-->
+<installer-gui-script minSpecVersion="2">
+
+    <title>SampleDrum Factory Kits</title>
+    <organization>audio.sampledrum</organization>
+
+    <!-- No choice pane: there is one thing to install. -->
+    <options customize="never"
+             require-scripts="false"
+             hostArchitectures="x86_64,arm64"/>
+
+    <!-- The plug-in's minimum, because these are of no use without it. -->
+    <allowed-os-versions>
+        <os-version min="12.0"/>
+    </allowed-os-versions>
+
+    <!-- /Library/Audio/Presets is on the boot volume and shared by every user,
+         as the plug-in itself is. -->
+    <domains enable_anywhere="false"
+             enable_currentUserHome="false"
+             enable_localSystem="true"/>
+
+    <welcome    file="welcome.html"    mime-type="text/html"/>
+    <license    file="license.txt"     mime-type="text/plain"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+
+    <choices-outline>
+        <line choice="choice.presets"/>
+    </choices-outline>
+
+    <!-- Both formats read this one folder, so one component serves the VST3
+         and the Audio Unit. -->
+    <choice id="choice.presets"
+            title="Factory kits"
+            description="Drum kits, samples included, installed into /Library/Audio/Presets/AE Cobley/SampleDrum, where both the VST3 and the Audio Unit look for presets.">
+        <pkg-ref id="audio.sampledrum.presets.pkg"/>
+    </choice>
+
+    <pkg-ref id="audio.sampledrum.presets.pkg"
+             version="__VERSION__"
+             onConclusion="none">SampleDrum-Presets.pkg</pkg-ref>
+
+</installer-gui-script>

@@ -101,7 +101,8 @@ setup () {
 here="$(cd "$(dirname "$0")" && pwd)"
 v="$(sed -n 's/^set(PLUGIN_VERSION[[:space:]]*"\([^"]*\)").*/\1/p' "$here/../CMakeLists.txt")"
 echo "build-installer $*" > "$here/.called-with"
-[ "${FAKE_NO_PKG:-0}" = 1 ] || echo pkg > "$here/$NAME-$v.pkg"
+kits=""; case " $* " in *" --kits "*) kits="Kits-" ;; esac
+[ "${FAKE_NO_PKG:-0}" = 1 ] || echo pkg > "$here/$NAME-$kits$v.pkg"
 S
     chmod +x setup-xcode.sh tools/run-tests.sh installer/build-installer.sh
     v="$(sed -n 's/^set(PLUGIN_VERSION[[:space:]]*"\([^"]*\)").*/\1/p' CMakeLists.txt)"
@@ -221,6 +222,26 @@ PREP='echo old > installer/$FAKE_NAME-0.9.pkg; echo stale > installer/.built-fro
 case_ 0 "an earlier package and .built-from are removed first"
 if [ -e "$TMP/proj/installer/$FAKE_NAME-0.9.pkg" ] || [ -e "$TMP/proj/installer/.built-from" ]; then
     echo "  FAIL  ... but they are still there"; fail=$((fail+1))
+fi
+
+#--------------------------------------------------------------------------
+# --kits: the factory-kits package, built on its own.
+#--------------------------------------------------------------------------
+if ls "$ROOT"/installer/presets/*.vstpreset >/dev/null 2>&1; then
+EXPECT="^build-installer --kits --sign-installer BBBB1 --notarize project6-notary$"
+case_ 0 "--kits builds the kits package alone: installer certificate only" --kits FAKE_APP_IDS=0
+EXPECT="missing or stale"
+PREP='rm installer/presets/*.aupreset'
+case_ 1 "--kits refuses when an .aupreset is missing" --kits
+EXPECT="^build-installer --kits$"
+PREP='echo "x" > stray.txt; git tag v$(sed -n "s/^set(PLUGIN_VERSION[[:space:]]*\"\([^\"]*\)\").*/\1/p" CMakeLists.txt)'
+case_ 0 "--kits --unsigned: no tag, notes or clean-tree check (the kits follow a release)" --kits --unsigned
+fi
+
+PREP='echo kits > installer/$FAKE_NAME-Kits-0.9.pkg'
+case_ 0 "the plug-in's release leaves a kits package alone"
+if [ ! -e "$TMP/proj/installer/$FAKE_NAME-Kits-0.9.pkg" ]; then
+    echo "  FAIL  ... but it was deleted"; fail=$((fail+1))
 fi
 
 echo
