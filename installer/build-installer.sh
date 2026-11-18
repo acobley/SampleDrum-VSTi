@@ -17,6 +17,17 @@
 # format gets only that one - and, when samples/ has any .wav files in it, a
 # third: the factory samples, into /Users/Shared/SampleDrum/Samples.
 #
+# THE FACTORY KITS ARE A SEPARATE INSTALLER, and the one above carries none:
+#
+#   installer/build-installer.sh --kits      [the same signing options]
+#
+# makes installer/SampleDrum-Kits-<version>.pkg, which installs ONLY the
+# presets in installer/presets (.vstpreset, and the .aupreset made from each
+# by tools/make-presets.py) into /Library/Audio/Presets/AE Cobley/SampleDrum.
+# Nothing in it is code, so it needs no build tree and no --sign-app; to be
+# downloadable it still needs --sign-installer and --notarize. It is about
+# 900 MB, which is why it is not in the plug-in's installer.
+#
 # SIGNING - read this before sending the result to anyone:
 #
 #   With no arguments the payload is ad-hoc signed and the .pkg is not signed
@@ -47,6 +58,13 @@ NAME="SampleDrum"
 VST3_ID="audio.sampledrum.vst3"
 AU_ID="audio.sampledrum.audiounit"
 SAMPLES_ID="audio.sampledrum.samples"
+PRESETS_ID="audio.sampledrum.presets"
+
+# Where both formats look for factory presets, and it is the same folder for
+# each: VST3 uses $COMPANY/$PLUGIN-NAME (Steinberg's Preset Locations), and
+# an Audio Unit uses <manufacturer>/<plug-in> taken from the component's name
+# - "AE Cobley: SampleDrum" - which lands in the same place. (ForTran's.)
+PRESETS_DIR="/Library/Audio/Presets/AE Cobley/$NAME"
 
 # THE FACTORY SAMPLE FOLDER. Must be the same string as kFactorySampleRoot in
 # source/SampleDrumSample.h - a cell is recognised as factory by that prefix,
@@ -73,6 +91,7 @@ SIGN_APP="-"          # ad-hoc, which is what the build itself uses
 SIGN_INSTALLER=""
 NOTARY_PROFILE=""
 CONFIG="Release"
+KITS=0                # 1: the factory-kits installer instead - see the header
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -80,6 +99,7 @@ while [ $# -gt 0 ]; do
         --sign-installer) SIGN_INSTALLER="$2"; shift 2 ;;
         --notarize)       NOTARY_PROFILE="$2"; shift 2 ;;
         --config)         CONFIG="$2"; shift 2 ;;
+        --kits)           KITS=1; shift ;;
         --list-identities)
             echo "Code-signing identities (for --sign-app):"
             security find-identity -v -p codesigning || true
@@ -167,6 +187,7 @@ VST3_SRC="$BUILT/$NAME.vst3"
 AU_SRC="$BUILT/$NAME.component"
 
 for bundle in "$VST3_SRC" "$AU_SRC"; do
+    [ "$KITS" -eq 1 ] && break    # the kits installer ships no bundle
     [ -d "$bundle" ] || {
         echo "build-installer: $bundle is not there." >&2
         echo "  Build first:  ./setup-xcode.sh --no-open && cmake --build build --config $CONFIG" >&2
@@ -193,12 +214,58 @@ if [ -d "$ROOT/samples" ]; then
     done < <(find "$ROOT/samples" -type f -iname '*.wav' -print0)
 fi
 
+# THE FACTORY KITS - only for --kits. The .aupreset files are MADE from the
+# .vstpreset ones by tools/make-presets.py; a stale or missing one would ship
+# the Audio Unit a different kit from the VST3, so that is refused here as
+# well as in build-release.sh. A kits installer with no kits is refused too:
+# unlike the samples, the kits ARE that package.
+PRESET_COUNT=0
+mkdir -p "$WORK/root-presets"
+if [ "$KITS" -eq 1 ]; then
+    SAMPLE_COUNT=0    # samples belong to the plug-in's installer
+    if [ -d "$HERE/presets" ]; then
+        PRESET_COUNT=$(find "$HERE/presets" -maxdepth 1 -type f \( -name '*.vstpreset' -o -name '*.aupreset' \) | wc -l | tr -d ' ')
+    fi
+    [ "$PRESET_COUNT" -gt 0 ] || {
+        echo "build-installer: --kits, but there are no presets in installer/presets." >&2
+        exit 1
+    }
+    python3 "$ROOT/tools/make-presets.py" --check >/dev/null || {
+        echo "build-installer: installer/presets/*.aupreset are missing or stale." >&2
+        echo "                 Run tools/make-presets.py and build again." >&2
+        exit 1
+    }
+    # The CONTENTS, not the folder: the install location is already the
+    # per-plug-in directory, so copying the folder itself would give
+    # .../SampleDrum/presets/*.vstpreset and no host would look there.
+    cp "$HERE/presets/"*.vstpreset "$HERE/presets/"*.aupreset "$WORK/root-presets/"
+fi
+
+if [ "$KITS" -eq 1 ]; then
+    echo "==> SampleDrum $VERSION FACTORY KITS: $PRESET_COUNT preset file(s) staged for $PRESETS_DIR"
+else
 echo "==> SampleDrum $VERSION, from $CONFIG"
 if [ "$SAMPLE_COUNT" -gt 0 ]; then
     echo "==> $SAMPLE_COUNT factory sample(s) staged for $SAMPLES_DEST"
 else
     echo "==> no factory samples in samples/ - that component is left out"
 fi
+fi
+
+if [ "$KITS" -eq 1 ]; then
+    # The presets: data, unsigned, inside the notarised archive. Each kit
+    # carries its own samples, so these are several MB apiece.
+    pkgbuild --quiet \
+        --root "$WORK/root-presets" \
+        --identifier "$PRESETS_ID.pkg" \
+        --version "$VERSION" \
+        --install-location "$PRESETS_DIR" \
+        --ownership recommended \
+        "$WORK/pkgs/$NAME-Presets.pkg"
+    echo "==> $PRESET_COUNT preset file(s) packaged for $PRESETS_DIR"
+else
+# ---- THE PLUG-IN: everything from here to "component packages built" is the
+# ---- VST3 and the AU (and the samples). Not indented, to keep the diff honest.
 
 #-----------------------------------------------------------------------------
 # STAGE. cp -R and not a move: the build tree is left exactly as it was, so
@@ -341,6 +408,8 @@ if [ "$SAMPLE_COUNT" -gt 0 ]; then
     echo "==> $SAMPLE_COUNT sample file(s) packaged for $SAMPLES_DEST"
 fi
 
+fi   # the plug-in, not --kits
+
 echo "==> component packages built"
 
 #-----------------------------------------------------------------------------
@@ -348,17 +417,24 @@ echo "==> component packages built"
 # choices; the version is substituted rather than duplicated.
 #-----------------------------------------------------------------------------
 mkdir -p "$WORK/resources"
-cp "$HERE/resources/welcome.html" "$HERE/resources/conclusion.html" "$WORK/resources/"
 cp "$ROOT/LICENSE" "$WORK/resources/license.txt"
-
-sed "s/__VERSION__/$VERSION/g" "$HERE/distribution.xml" > "$WORK/distribution.xml"
+if [ "$KITS" -eq 1 ]; then
+    # Its own panes and its own distribution, copied in under the names the
+    # distribution refers to.
+    cp "$HERE/resources/welcome-kits.html"    "$WORK/resources/welcome.html"
+    cp "$HERE/resources/conclusion-kits.html" "$WORK/resources/conclusion.html"
+    sed "s/__VERSION__/$VERSION/g" "$HERE/distribution-kits.xml" > "$WORK/distribution.xml"
+else
+    cp "$HERE/resources/welcome.html" "$HERE/resources/conclusion.html" "$WORK/resources/"
+    sed "s/__VERSION__/$VERSION/g" "$HERE/distribution.xml" > "$WORK/distribution.xml"
+fi
 
 # A distribution that names a package productbuild was not given is one
 # Installer cannot resolve, and it fails at the page stage naming none of
 # it - so with no sample files, every block between the SAMPLES markers comes
 # out. Marked as a RANGE rather than line by line, because a multi-line XML
 # element cannot carry a comment on each of its lines.
-if [ "$SAMPLE_COUNT" -eq 0 ]; then
+if [ "$KITS" -eq 0 ] && [ "$SAMPLE_COUNT" -eq 0 ]; then
     sed '/BEGIN SAMPLES/,/END SAMPLES/d' "$WORK/distribution.xml" > "$WORK/distribution-trimmed.xml"
     mv "$WORK/distribution-trimmed.xml" "$WORK/distribution.xml"
     echo "==> no samples, so the samples choice is not in the distribution"
@@ -385,6 +461,7 @@ fi
 
 UNSIGNED="$WORK/$NAME-$VERSION-unsigned.pkg"
 FINAL="$HERE/$NAME-$VERSION.pkg"
+[ "$KITS" -eq 1 ] && FINAL="$HERE/$NAME-Kits-$VERSION.pkg"
 
 productbuild \
     --distribution "$WORK/distribution.xml" \
@@ -462,7 +539,7 @@ if [ -n "$NOTARY_PROFILE" ]; then
         echo "notarise an unsigned package." >&2
         exit 1
     }
-    [ "$SIGN_APP" != "-" ] || {
+    [ "$KITS" -eq 1 ] || [ "$SIGN_APP" != "-" ] || {
         echo "build-installer: --notarize needs --sign-app with a real Developer ID" >&2
         echo "too. Apple notarises the package AND what is inside it; an ad-hoc" >&2
         echo "signed payload is rejected however well the package itself is signed." >&2
@@ -506,7 +583,7 @@ fi
 # describes it, and the publish script refuses rather than tagging something
 # close to it.
 #-----------------------------------------------------------------------------
-if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+if [ "$KITS" -eq 0 ] && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     {
         echo "commit=$(git -C "$ROOT" rev-parse HEAD)"
         echo "version=$VERSION"
@@ -524,10 +601,14 @@ rm -rf "$WORK"
 echo
 echo "    $FINAL"
 echo
+if [ "$KITS" -eq 1 ]; then
+echo "    Installs:  $PRESETS_DIR ($PRESET_COUNT files)"
+else
 echo "    Installs:  /Library/Audio/Plug-Ins/VST3/$NAME.vst3"
 echo "               /Library/Audio/Plug-Ins/Components/$NAME.component"
 if [ "$SAMPLE_COUNT" -gt 0 ]; then
 echo "               $SAMPLES_DEST ($SAMPLE_COUNT files)"
+fi
 fi
 echo
 echo "    Check what is really in it with:"

@@ -7,6 +7,8 @@
 #   installer/build-release.sh --unsigned       local build, no certificates
 #   installer/build-release.sh --skip-tests     when you have just run them
 #   installer/build-release.sh --allow-dirty    a build you will throw away
+#   installer/build-release.sh --kits           the FACTORY KITS package instead
+#                                               (installer/presets only; see below)
 #
 # Then:   installer/publish-release.sh --dry-run
 #         installer/publish-release.sh
@@ -15,7 +17,8 @@
 #
 # This is build-installer.sh plus everything that has to be true BEFORE it:
 # the versions agree, the tag is not already taken, the suites pass, the AU
-# presets match the VST3 ones, the configure is fresh, no home-directory
+# presets match the VST3 ones (they ship separately - see --kits - but a
+# release with stale ones is refused all the same), the configure is fresh, no home-directory
 # paths are in the binaries, both architectures are present, and no earlier
 # package is lying around to be mistaken for this one.
 #
@@ -23,6 +26,13 @@
 # Developer ID certificates - or none - should be told, not guessed at.
 # Override with --sign-app / --sign-installer; the notary profile defaults
 # to project6-notary, or pass --notarize <profile> / set NOTARY_PROFILE.
+#
+# --kits builds installer/<name>-Kits-<version>.pkg, the presets alone (the
+# plug-in's package carries none): the AU copies checked current, then one
+# Developer ID Installer signature and a notarisation. No tests, no build, no
+# Application certificate - there is no code in it - and no tag or clean-tree
+# check: the kits are not in git, and they may follow a release already out.
+# Upload it to the release by hand; publish-release.sh handles the plug-in.
 #-----------------------------------------------------------------------------
 set -euo pipefail
 
@@ -36,6 +46,7 @@ SIGN_INSTALLER=""
 UNSIGNED=0
 SKIP_TESTS=0
 ALLOW_DIRTY=0
+KITS=0
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -45,7 +56,8 @@ while [ $# -gt 0 ]; do
 		--unsigned)       UNSIGNED=1; shift ;;
 		--skip-tests)     SKIP_TESTS=1; shift ;;
 		--allow-dirty)    ALLOW_DIRTY=1; shift ;;
-		-h|--help)        sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
+		--kits)           KITS=1; shift ;;
+		-h|--help)        sed -n '2,35p' "${BASH_SOURCE[0]}"; exit 0 ;;
 		*) echo "build-release: unknown argument '$1'" >&2; exit 1 ;;
 	esac
 done
@@ -63,6 +75,47 @@ NAME="$(sed -n 's/^NAME="\([^"]*\)".*/\1/p' "$HERE/build-installer.sh" | head -1
 TAG="v$VERSION"
 
 echo "==> $NAME $VERSION"
+
+#-----------------------------------------------------------------------------
+# --kits: the factory-kits package, and nothing else.
+#-----------------------------------------------------------------------------
+if [ "$KITS" -eq 1 ]; then
+	KITS_PKG="$HERE/$NAME-Kits-$VERSION.pkg"
+	python3 tools/check-versions.py || die "the version numbers or the maker's name disagree - fix them first."
+	ls installer/presets/*.vstpreset >/dev/null 2>&1 || die "there are no kits in installer/presets."
+	python3 tools/make-presets.py --check || die \
+		"the .aupreset files are missing or stale. Run tools/make-presets.py,
+  load a few in an AU host, and build again."
+	echo "==> $(ls installer/presets/*.vstpreset | wc -l | tr -d ' ') kit(s), AU copies current"
+	rm -f "$KITS_PKG"
+	if [ "$UNSIGNED" -eq 1 ]; then
+		echo "==> building an UNSIGNED kits package (local use only)"
+		"$HERE/build-installer.sh" --kits
+	else
+		# Only the INSTALLER certificate: nothing in this package is code.
+		# (findOne is defined further down; this is its twin, kept short.)
+		if [ -z "$SIGN_INSTALLER" ]; then
+			listing="$(security find-identity -v 2>/dev/null | grep 'Developer ID Installer' || true)"
+			[ "$(printf '%s\n' "$listing" | grep -c 'Developer ID Installer' || true)" -eq 1 ] || die \
+				"need exactly one \"Developer ID Installer\" certificate (or --sign-installer):
+$listing"
+			SIGN_INSTALLER="$(printf '%s\n' "$listing" | awk '{print $2}')"
+		fi
+		xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 || die \
+			"the notary profile \"$NOTARY_PROFILE\" does not work."
+		echo "==> signing with $SIGN_INSTALLER (installer); notary profile $NOTARY_PROFILE answers"
+		"$HERE/build-installer.sh" --kits \
+			--sign-installer "$SIGN_INSTALLER" \
+			--notarize "$NOTARY_PROFILE"
+	fi
+	[ -f "$KITS_PKG" ] || die "$KITS_PKG is not there after the build."
+	echo
+	echo "    $KITS_PKG"
+	shasum -a 256 "$KITS_PKG"
+	echo
+	echo "    Upload it to the release: gh release upload $TAG \"$KITS_PKG\""
+	exit 0
+fi
 
 #-----------------------------------------------------------------------------
 # 0. Things that are cheap to check and expensive to find out about after a
@@ -209,7 +262,9 @@ done
 # 5. No earlier package left where this one goes. An unsigned build writes
 #    the same path as a signed one and nothing in the name tells them apart.
 #-----------------------------------------------------------------------------
-rm -f "$HERE/$NAME-"*.pkg "$HERE/.built-from"
+# $NAME-<digit>..., so the FACTORY KITS package ($NAME-Kits-...) - built
+# separately, 900 MB and a notarisation away - is not swept up with it.
+rm -f "$HERE/$NAME-"[0-9]*.pkg "$HERE/.built-from"
 
 #-----------------------------------------------------------------------------
 # 6. The package itself, ONCE, signed. build-installer.sh writes

@@ -24,6 +24,13 @@
          the user's home no - the component packages install to absolute
          paths under /Library and a home-directory install would put them
          somewhere no host looks. -->
+    <!-- OLDEST macOS IT WILL INSTALL ON. Must match CMAKE_OSX_DEPLOYMENT_TARGET
+         in CMakeLists.txt: the binaries will not load on anything older, so
+         Installer should refuse up front rather than install a dead plug-in. -->
+    <allowed-os-versions>
+        <os-version min="12.0"/>
+    </allowed-os-versions>
+
     <domains enable_anywhere="false"
              enable_currentUserHome="false"
              enable_localSystem="true"/>

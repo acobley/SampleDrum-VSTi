@@ -145,6 +145,32 @@ inline double cellLevelGain (double db)
 }
 
 //------------------------------------------------------------------------
+// A drum's own level - the knob at the foot of each strip
+//
+// The same range and law as a cell's (-40 to +12 dB, the bottom is
+// silence): it is the strip's fader, AFTER the four cell levels, so a
+// whole drum can be balanced against the kit without touching the
+// balance between its velocity bands. It multiplies into each of the
+// column's cell gains and rides the cells' own smoothing - no second
+// smoother, and two voices on one cell still hear one gain.
+//------------------------------------------------------------------------
+constexpr double kDrumLevelMinDb     = kCellLevelMinDb;
+constexpr double kDrumLevelMaxDb     = kCellLevelMaxDb;
+constexpr double kDrumLevelDefaultDb = 0.0;
+
+/** A drum level in dB to its gain: cellLevelGain, and WITHIN
+    kIsolatorUnitySnapDb (below) OF 0 dB IS EXACTLY 1 - the isolator's
+    reason: 0 dB does not survive a host's float automation exactly, and
+    anything but unity would end the bit-identity of a hit at defaults. */
+double drumLevelGain (double db);
+
+/** How long MUTE and SOLO take to close or open a strip: a LINEAR ramp,
+    the choke's length. Short enough that a mute automated on the beat is
+    on the beat; long enough not to click. A ramp, not the levels' 20 ms
+    one-pole, which leaks -9 dB 20 ms after a mute and reads as "soft". */
+constexpr double kStripGateSeconds = 0.005;
+
+//------------------------------------------------------------------------
 /** A one-pole glide towards a target, its coefficient recomputed from the
     sample rate so the glide takes the same MILLISECONDS at every rate. */
 class Smoother
@@ -471,6 +497,28 @@ public:
 	/** The gain the cell is at right now, after smoothing - for tests. */
 	float currentCellGain (int cell) const;
 
+	/** A DRUM's level - its strip's knob - in dB. Multiplies into all
+	    four of the column's cells, smoothed with them. */
+	void setDrumLevelDb (int column, double db);
+	double drumLevelDb (int column) const;
+
+	/** SOLO and MUTE, per drum. Whether a strip sounds is
+	    stripAudible() (SampleDrumKit.h): mute wins, any solo silences
+	    every strip not soloed. A strip that closes or opens ramps over
+	    kStripGateSeconds; voices on a closed strip KEEP PLAYING, silently
+	    - they still count as voices, light their cells, and the closed
+	    hat still chokes the open one - so unmuting mid-hit brings the
+	    sound back where it has got to, and a soloed open hat is cut just
+	    as it is in the mix. Auditions from the panel go through the strip
+	    too: a muted drum's cell clicks silently. */
+	void setDrumSolo (int column, bool on);
+	void setDrumMute (int column, bool on);
+	bool drumSolo (int column) const;
+	bool drumMute (int column) const;
+
+	/** The strip's gate right now, 0 (closed) .. 1 (open) - for tests. */
+	float currentStripGate (int column) const;
+
 	/** The MIDI note that plays a column. Defaults to kDrumMap. Several
 	    columns may share a note, and then ONE HIT PLAYS ALL OF THEM -
 	    layering two drums is a thing people do on purpose, and the
@@ -602,6 +650,10 @@ private:
 	void beginFade (Voice& voice, int samples);
 	void renderVoices (float* left, float* right, int from, int to);
 	void advanceCellGains (int numSamples);
+	void advanceStripGates (int numSamples);
+	/** Recompute a cell's gain target: its level x its drum's level. */
+	void retargetCell (int cell);
+	void retargetGates ();
 	unsigned int loadedMask () const;
 
 	double mSampleRate   = 44100.0;
@@ -625,6 +677,23 @@ private:
 	float  mCellGainEnd[kCellCount];
 	double mCellLevelCoeff = 1.0;   // per-sample one-pole coefficient
 	int    mBlockLength = 0;        // of the block render() is in
+
+	/** Each drum's level (dB), and the solo / mute masks, one bit per
+	    column. Audio thread only, like the cell levels. */
+	double mDrumLevelDb[kColumns];
+	unsigned int mSoloMask = 0u;
+	unsigned int mMuteMask = 0u;
+
+	/** Each strip's GATE: where it is, where it is going, and the signed
+	    per-sample step this block. A voice's gain at sample i of a block
+	    is gateStart + gateStep * (i + 1), CLAMPED at gateTarget - so a
+	    5 ms ramp is 5 ms whatever the block size. Settled, the step is 0
+	    and the gate exactly 1 or 0. */
+	float mGate[kColumns];
+	float mGateTarget[kColumns];
+	float mGateStart[kColumns];
+	float mGateStep[kColumns];
+	float mGateStepPerSample = 1.f;   // 1 / (kStripGateSeconds x rate)
 
 	/** Each column's note. Plain ints: written by applyParam on the audio
 	    thread (and by setState, whose worst case is one hit read against

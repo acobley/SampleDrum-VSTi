@@ -207,8 +207,8 @@ void PvLamp::draw (CDrawContext* context)
 	disc (context, c, r + 1.6, hex (0x000000));
 	ring (context, c, r + 1.6, hex (0x555555), 0.8);
 	if (on)
-		disc (context, c, r + 4., Pv::alpha (Pv::kLampOn, 0.22));
-	disc (context, c, r, on ? Pv::kLampOn : Pv::kLampOff);
+		disc (context, c, r + 4., Pv::alpha (mOn, 0.22));
+	disc (context, c, r, on ? mOn : mOff);
 	disc (context, CPoint (c.x - r * 0.3, c.y - r * 0.3), r * 0.32, hex (0xffffff, on ? 0.55 : 0.22));
 	setDirty (false);
 }

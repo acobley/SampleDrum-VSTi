@@ -326,6 +326,65 @@ int main ()
 		check (titled,                                    "each row's id is its index, title and units not null");
 	}
 
+	//--------------------------------------------------------------------
+	section ("7. The drum strips: a level, a solo and a mute per drum");
+	//--------------------------------------------------------------------
+	{
+		// A PROJECT FROM 1.1.0.0, which had 45 parameters. Every strip must
+		// come back at unity, unsoloed and unmuted - so the kit sounds as
+		// it did - with everything before them read as saved.
+		const int oldCount = kDrumLevelBase;
+		auto* memory = new MemoryStream ();
+		{
+			IBStreamer out (memory, kLittleEndian);
+			out.writeInt32 (kStateVersion);
+			out.writeInt32 (oldCount);
+			for (int i = 0; i < oldCount; ++i)
+				out.writeDouble (i == kBassGain ? 0.1 : kParams[i].defaultNormalized ());
+			out.writeInt32 (0);
+			out.writeInt32 (kCellCount);
+			for (int c = 0; c < kCellCount; ++c)
+				out.writeInt32 (0);
+		}
+		memory->seek (0, IBStream::kIBSeekSet, nullptr);
+		IBStreamer in (memory, kLittleEndian);
+		StreamState got;
+		check (readState (in, got) && got.complete,       "a 45-parameter project reads to the end");
+		check (got.params[kBassGain] == 0.1,              "... with its isolator as saved");
+		bool defaults = true;
+		for (int c = 0; c < kColumns; ++c)
+			defaults = defaults && got.params[drumLevelParam (c)] == kParams[drumLevelParam (c)].defaultNormalized ()
+			           && got.params[drumSoloParam (c)] == 0.0 && got.params[drumMuteParam (c)] == 0.0;
+		check (defaults,                                  "... and every strip at unity, unsoloed, unmuted");
+		memory->release ();
+	}
+	{
+		bool unity = true, titled = true;
+		for (int c = 0; c < kColumns; ++c)
+		{
+			const ParamDef& level = paramDef (drumLevelParam (c));
+			const float hostFloat = static_cast<float> (level.defaultNormalized ());
+			unity = unity && drumLevelGain (level.toPlain (level.defaultNormalized ())) == 1.0
+			        && drumLevelGain (level.toPlain (hostFloat)) == 1.0
+			        && drumLevelGain (level.toPlain (0.0)) == 0.0;
+			for (Steinberg::Vst::ParamID id : { drumLevelParam (c), drumSoloParam (c), drumMuteParam (c) })
+				titled = titled && kParams[id].id == id && kParams[id].title != nullptr && kParams[id].units != nullptr;
+			titled = titled && paramDef (drumSoloParam (c)).type == ParamType::Bool
+			         && paramDef (drumMuteParam (c)).type == ParamType::Bool
+			         && paramDef (drumMuteParam (c)).stepCount == 1;
+			titled = titled && columnOfDrumLevelParam (drumLevelParam (c)) == c
+			         && columnOfDrumSoloParam (drumSoloParam (c)) == c
+			         && columnOfDrumMuteParam (drumMuteParam (c)) == c
+			         && columnOfDrumSoloParam (drumLevelParam (c)) < 0
+			         && columnOfDrumMuteParam (drumSoloParam (c)) < 0;
+		}
+		check (unity,                                     "a drum's level defaults to exactly unity (even via float) and bottoms out in silence");
+		check (titled,                                    "each strip row's id is its index, titles not null, solo and mute are switches, ranges disjoint");
+		check (std::string (kParams[drumMuteParam (3)].title) == "Closed HH Mute"
+		       && std::string (kParams[drumLevelParam (0)].title) == "Kick Level",
+		                                                  "titled by drum, for the host's automation list");
+	}
+
 	std::printf ("\n%d checks, %d failures\n", gChecks, gFailures);
 	return gFailures == 0 ? 0 : 1;
 }

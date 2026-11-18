@@ -65,7 +65,7 @@ std::string formatIsolator (ParamID tag, double normalized)
 }
 
 /** The panel's bitmaps are drawn at 2x, so they are sharp on a Retina
-    screen; declaring the scale makes VSTGUI draw them at 1200 x 640.
+    screen; declaring the scale makes VSTGUI draw them at 1200 x 700.
     (ForTranEditor::bitmap2x.) */
 CBitmap* bitmap2x (const char* name)
 {
@@ -148,6 +148,31 @@ void SampleDrumEditor::refreshValue (ParamID tag, double normalized)
 	const int cell = cellOfLevelParam (tag);
 	if (isCellIndex (cell) && mLevelText[cell])
 		mLevelText[cell]->setText (formatDb (paramDef (tag).toPlain (normalized), true));
+
+	const int drum = columnOfDrumLevelParam (tag);
+	if (drum >= 0 && mDrumLevelText[drum])
+		mDrumLevelText[drum]->setText (formatDb (paramDef (tag).toPlain (normalized), true));
+
+	if (columnOfDrumSoloParam (tag) >= 0 || columnOfDrumMuteParam (tag) >= 0)
+		refreshStrips ();
+}
+
+//------------------------------------------------------------------------
+void SampleDrumEditor::refreshStrips ()
+{
+	// The DSP's own rule, from the parameters the panel shows - so a strip
+	// reads dim exactly when the audio has it shut.
+	unsigned int solo = 0u, mute = 0u;
+	for (int column = 0; column < kColumns; ++column)
+	{
+		if (paramNormalized (drumSoloParam (column)) >= 0.5)
+			solo |= 1u << column;
+		if (paramNormalized (drumMuteParam (column)) >= 0.5)
+			mute |= 1u << column;
+	}
+	for (int column = 0; column < kColumns; ++column)
+		if (mDrumLevelText[column])
+			mDrumLevelText[column]->setColour (stripAudible (column, solo, mute) ? Pv::kInk : Pv::kDimLabel);
 }
 
 //------------------------------------------------------------------------
@@ -311,12 +336,34 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 			refreshValue (level, paramNormalized (level));
 		}
 
+		// ---- THE DRUM'S STRIP: its level, then SOLO, MUTE and HIT ----------
+		const ParamID drumLevel = drumLevelParam (column);
+		mDrumLevels[column] = addKnob (drumLevel, x + kDrumKnobDx, kDrumKnobY, kDrumKnobOuter);
+		mDrumLevelText[column] = addValue (x + kDrumValueDx, kDrumValueY, 8.5, SciFi::Align::Left);
+		refreshValue (drumLevel, paramNormalized (drumLevel));
+
+		// SOLO and MUTE are SWITCHES: a click toggles the parameter, as
+		// BYPASS does. The labels under them are printed on the panel.
+		const auto addSwitch = [this, x] (ParamID tag, double dx)
+		{
+			auto* lamp = new PvLamp (CPoint (x + dx, kStripLampY), this, static_cast<int32_t> (tag));
+			lamp->setValueNormalized (static_cast<float> (paramNormalized (tag)));
+			lamp->setDefaultValue (0.f);
+			lamp->setTooltipText (paramDef (tag).title);
+			frame->addView (lamp);
+			return lamp;
+		};
+		mSolo[column] = addSwitch (drumSoloParam (column), kSoloLampDx);
+		mSolo[column]->setColours (Pv::kSoloOn, Pv::kSoloOff);
+		mMute[column] = addSwitch (drumMuteParam (column), kMuteLampDx);
+
 		// THE HIT LAMP - an indicator: no listener, no parameter.
-		mHitLamps[column] = new PvLamp (CPoint (x + 22., kHitLampY), nullptr, 0);
+		mHitLamps[column] = new PvLamp (CPoint (x + kHitLampDx, kStripLampY), nullptr, 0);
 		mHitLamps[column]->setMouseEnabled (false);
 		frame->addView (mHitLamps[column]);
 	}
 	refreshSharedNotes ();
+	refreshStrips ();
 
 	// ---- MASTER --------------------------------------------------------------
 	mLastHitScreen = new PvLastHitOled (CRect (978., 106., 1170., 190.));
@@ -336,19 +383,21 @@ bool PLUGIN_API SampleDrumEditor::open (void* parent, const PlatformType& platfo
 	}
 	refreshIsolatorScreen ();
 
-	mTrim = addKnob (kOutputTrim, 1018., 432., 22.);
-	mTrimText = addValue (1018., 465., 9.5, SciFi::Align::Centre);
+	// The output block is 60 px taller since the drum strips (d2p.js): the
+	// meter takes the height; trim and OVER sit lower beside it.
+	mTrim = addKnob (kOutputTrim, 1018., 462., 22.);
+	mTrimText = addValue (1018., 495., 9.5, SciFi::Align::Centre);
 	refreshValue (kOutputTrim, paramNormalized (kOutputTrim));
 
-	mMeter = new PvOutputMeter (CRect (1072., 394., 1170., 528.));
+	mMeter = new PvOutputMeter (CRect (1072., 394., 1170., 588.));
 	frame->addView (mMeter);
-	mOver = new PvLamp (CPoint (992., 504.), nullptr, 0);
+	mOver = new PvLamp (CPoint (992., 564.), nullptr, 0);
 	mOver->setMouseEnabled (false);
 	frame->addView (mOver);
 
 	// BYPASS - the one lamp that is a switch: an instrument's bypass is
 	// silence (SampleDrumProcessor::process).
-	mBypass = new PvLamp (CPoint (992., 600.), this, static_cast<int32_t> (kBypass));
+	mBypass = new PvLamp (CPoint (992., 660.), this, static_cast<int32_t> (kBypass));
 	mBypass->setValueNormalized (static_cast<float> (paramNormalized (kBypass)));
 	mBypass->setDefaultValue (0.f);
 	mBypass->setTooltipText ("Bypass: silence");
@@ -384,6 +433,10 @@ void PLUGIN_API SampleDrumEditor::close ()
 	{
 		mNotes[column] = nullptr;
 		mHitLamps[column] = nullptr;
+		mDrumLevels[column] = nullptr;
+		mDrumLevelText[column] = nullptr;
+		mSolo[column] = nullptr;
+		mMute[column] = nullptr;
 	}
 	for (int i = 0; i < 4; ++i)
 	{
@@ -462,6 +515,13 @@ void SampleDrumEditor::updateControl (ParamID tag, ParamValue normalized)
 	const int cell = cellOfLevelParam (tag);
 	if (isCellIndex (cell))
 		set (mLevels[cell]);
+
+	if (const int drum = columnOfDrumLevelParam (tag); drum >= 0)
+		set (mDrumLevels[drum]);
+	if (const int drum = columnOfDrumSoloParam (tag); drum >= 0)
+		set (mSolo[drum]);
+	if (const int drum = columnOfDrumMuteParam (tag); drum >= 0)
+		set (mMute[drum]);
 
 	const int column = columnOfNoteParam (tag);
 	if (column >= 0 && mNotes[column])

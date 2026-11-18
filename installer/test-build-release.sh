@@ -70,8 +70,28 @@ setup () {
     rm -rf "$TMP/proj"; mkdir -p "$TMP/proj"
     # Plain cp, not rsync: macOS 15 replaced rsync with openrsync.
     for f in .gitignore CMakeLists.txt README.md source resource tools installer; do
+        [ "$f" = installer ] && continue
         [ -e "$ROOT/$f" ] && cp -R "$ROOT/$f" "$TMP/proj/"
     done
+    # The installer folder WITHOUT the factory kits - SampleDrum's are about
+    # 918 MB, and this runs 24 times - then the first kit's pair, which is all
+    # the preset cases below need.
+    mkdir -p "$TMP/proj/installer"
+    for f in "$ROOT/installer/"* "$ROOT/installer/".[!.]*; do
+        [ -e "$f" ] || continue
+        [ "$(basename "$f")" = presets ] && continue
+        cp -R "$f" "$TMP/proj/installer/"
+    done
+    if [ -d "$ROOT/installer/presets" ]; then
+        mkdir -p "$TMP/proj/installer/presets"
+        first="$(ls "$ROOT/installer/presets/"*.vstpreset 2>/dev/null | head -1)"
+        if [ -n "$first" ]; then
+            cp "$first" "${first%.vstpreset}.aupreset" "$TMP/proj/installer/presets/" 2>/dev/null || true
+        fi
+        for f in "$ROOT/installer/presets/"*; do
+            case "$f" in *.vstpreset|*.aupreset) ;; *) [ -e "$f" ] && cp -R "$f" "$TMP/proj/installer/presets/" ;; esac
+        done
+    fi
     mkdir -p "$TMP/proj/tools"
     cd "$TMP/proj" || exit 2
     rm -f installer/*.pkg installer/.built-from
@@ -81,7 +101,8 @@ setup () {
 here="$(cd "$(dirname "$0")" && pwd)"
 v="$(sed -n 's/^set(PLUGIN_VERSION[[:space:]]*"\([^"]*\)").*/\1/p' "$here/../CMakeLists.txt")"
 echo "build-installer $*" > "$here/.called-with"
-[ "${FAKE_NO_PKG:-0}" = 1 ] || echo pkg > "$here/$NAME-$v.pkg"
+kits=""; case " $* " in *" --kits "*) kits="Kits-" ;; esac
+[ "${FAKE_NO_PKG:-0}" = 1 ] || echo pkg > "$here/$NAME-$kits$v.pkg"
 S
     chmod +x setup-xcode.sh tools/run-tests.sh installer/build-installer.sh
     v="$(sed -n 's/^set(PLUGIN_VERSION[[:space:]]*"\([^"]*\)").*/\1/p' CMakeLists.txt)"
@@ -201,6 +222,26 @@ PREP='echo old > installer/$FAKE_NAME-0.9.pkg; echo stale > installer/.built-fro
 case_ 0 "an earlier package and .built-from are removed first"
 if [ -e "$TMP/proj/installer/$FAKE_NAME-0.9.pkg" ] || [ -e "$TMP/proj/installer/.built-from" ]; then
     echo "  FAIL  ... but they are still there"; fail=$((fail+1))
+fi
+
+#--------------------------------------------------------------------------
+# --kits: the factory-kits package, built on its own.
+#--------------------------------------------------------------------------
+if ls "$ROOT"/installer/presets/*.vstpreset >/dev/null 2>&1; then
+EXPECT="^build-installer --kits --sign-installer BBBB1 --notarize project6-notary$"
+case_ 0 "--kits builds the kits package alone: installer certificate only" --kits FAKE_APP_IDS=0
+EXPECT="missing or stale"
+PREP='rm installer/presets/*.aupreset'
+case_ 1 "--kits refuses when an .aupreset is missing" --kits
+EXPECT="^build-installer --kits$"
+PREP='echo "x" > stray.txt; git tag v$(sed -n "s/^set(PLUGIN_VERSION[[:space:]]*\"\([^\"]*\)\").*/\1/p" CMakeLists.txt)'
+case_ 0 "--kits --unsigned: no tag, notes or clean-tree check (the kits follow a release)" --kits --unsigned
+fi
+
+PREP='echo kits > installer/$FAKE_NAME-Kits-0.9.pkg'
+case_ 0 "the plug-in's release leaves a kits package alone"
+if [ ! -e "$TMP/proj/installer/$FAKE_NAME-Kits-0.9.pkg" ]; then
+    echo "  FAIL  ... but it was deleted"; fail=$((fail+1))
 fi
 
 echo

@@ -15,7 +15,7 @@ settings are `ISO` in `sd.js`: bass +4 dB at 200 Hz, treble −18 dB at 3.50 kHz
   box ("‹ 36 C1 ›") heads each column. Shows sounding cells with a playhead, empty cells naming the row they
   borrow from, and one "file not found" cell. An **Isolator** section (a response screen showing the low, mid and high bands with both crossovers, and Bass, Bass Freq,
   Treble and Treble Freq knobs) above Output (trim, stereo meter, over and bypass lamps, hat choke).
-- `SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png`: each drum is a mixer-style strip. Note box at the top,
+- `SampleDrum-Polivoks-2-ChannelStrips-NearlyNew.png` (the plug-in's panel; since PORTING-NOTES §17 re-rendered from `tools/polivoks/d2p.js` at 1200 × 700 with a drum level, SOLO and MUTE at the foot of each strip): each drum is a mixer-style strip. Note box at the top,
   then the four velocity cells soft to hard, each with a level knob and a dB readout, and a hit lamp at the
   bottom. All screens amber. Master section: last-hit scope, the **Isolator** (response screen, Bass and Treble level and frequency knobs),
   then output trim, meter, choke and bypass.

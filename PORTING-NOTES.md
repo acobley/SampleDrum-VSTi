@@ -509,7 +509,7 @@ ForTran's presets. **Read `installer/README.md`**; this is only what differs.
 | File | From | Changed |
 |---|---|---|
 | `build-installer.sh` | ForTran | names/ids; presets → **samples**: every `.wav` under `samples/` (sub-folders kept) → `SampleDrum-Samples.pkg` → `/Users/Shared/SampleDrum/Samples`, `--ownership recommended`; refuses if that is not `kFactorySampleRoot` in `SampleDrumSample.h`; `BEGIN SAMPLES`/`END SAMPLES` blocks stripped from the distribution when there are none. `root-samples` always exists, so the symlink guard scans it — ForTran's `${PRESET_COUNT:+…}` passed a missing directory to `find` (harmless there; worth fixing). |
-| `build-release.sh`, `publish-release.sh`, `test-build-release.sh`, `test-publish.sh` | ForTran | **none** — they read `NAME=` from `build-installer.sh`. The preset step is skipped (no `tools/make-presets.py`). Notary profile: `project6-notary`, shared by every plug-in. |
+| `build-release.sh`, `publish-release.sh`, `test-build-release.sh`, `test-publish.sh` | ForTran | **none** — they read `NAME=` from `build-installer.sh`. The preset step was skipped until §18 added `tools/make-presets.py`. Notary profile: `project6-notary`, shared by every plug-in. |
 | `verify-install.sh` | ForTran | names, `auval -v aumu SmDr AECo`; section 5 checks the factory samples are there and readable by every user. |
 | `distribution.xml`, `resources/*.html`, `scripts-au/postinstall` | ForTran / Project6 | SampleDrum's prose: the +6 dBFS summing, velocity picks the row, samples embedded. No REAPER/pitch-wheel/Level-knob text carried over. |
 | `release-notes-1.0.0.0.md` | new | `SHA-256: <paste from: …>` placeholder, filled by `publish-release.sh`. Assumes **no factory samples** ship; if `samples/` gets any, add them to *Installing* and *Uninstalling*. |
@@ -778,3 +778,140 @@ The hand checks, for the next change that touches the panel:
 
 **Version: 1.1.0.0** — the isolator's four parameters and the new panel; a minor bump, as ForTran's
 Polivoks panel was. Notes in `installer/release-notes-1.1.0.0.md`; `tools/check-versions.py` agrees.
+
+## 17. Drum strips: a level, SOLO and MUTE per drum (2026-11-17, branch `drum-strips`)
+
+Each column's strip gains a foot: a **DRUM LEVEL** knob, a **SOLO** lamp (amber) and a **MUTE** lamp (red), both
+switches, beside the existing **HIT** lamp.
+
+| | Decision | Why |
+|---|---|---|
+| Parameters | **24, appended**: ids **45–52** drum levels, **53–60** solos, **61–68** mutes, each block in column order (`drumLevelParam`, `drumSoloParam`, `drumMuteParam`; `columnOfDrum…Param` by range). Titles "Kick Level", "Closed HH Solo", "Crash Mute". **All automatable** — a mute on the beat is a performance gesture. `kStateVersion` stays 1. | Append, never insert. A 1.1.0.0 project (45 parameters) opens with every strip at 0 dB, unsoloed, unmuted: it sounds as it did. |
+| Drum level | −40…+12 dB, **bottom = silence**, the cell levels' law. **Multiplies into each of the column's four cell gain targets** (`retargetCell`) and rides the cells' own 20 ms smoothing. `drumLevelGain` snaps within 0.001 dB of 0 dB to exactly 1. | No second smoother; two voices on one cell still hear one gain. The snap for the isolator's reason: 0 dB through a host's float automation is 3e-6 dB, and anything but exact unity ends the bit-identity of a hit. |
+| The rule | **`stripAudible (column, soloMask, muteMask)`** in `SampleDrumKit.h`: **mute wins**; any solo silences every strip not soloed; several solos all play. The DSP gates by it and the panel dims a strip's level readout by it. | One copy (§3). Mute-wins lets a strip be soloed "ready" while muted. |
+| Gate | Per column, a **5 ms linear ramp** (`kStripGateSeconds`), per sample and **clamped at its target**, so 5 ms whatever the block size; lands exactly on 0 or 1. Skipped when open and settled. `reset()` snaps it, so a reopened project's muted drum is shut from its first sample. | The levels' 20 ms one-pole is still −9 dB 20 ms after a mute — it reads as soft. The ramp is the choke's length. |
+| Voices on a shut strip | **Keep playing, silently**: they count as voices, light their cells and the HIT lamp, and the closed hat **still chokes** the open one. Unmuting mid-hit brings the sound back where it has got to. | A soloed open hat is cut as it is in the mix. HIT showing MIDI arriving on a muted drum is useful. |
+| Auditions | **Go through the strip**: clicking a muted drum's cell is silent. | It is a mixer. Change by giving audition voices their own path past the gate if it annoys in use. |
+| Host text | Levels print a number even at the bottom (as the cell levels); solo/mute print "On"/"Off", and **`fromString` reads "On"/"Off" back** as well as a number. | The validator's text round trip. |
+
+**Panel.** The editor is **1200 × 700** (60 px taller). Each strip box runs to 684: a rule at 592, the drum knob at
+(x+22, 622) outer 14 with its value at (x+42, 620) and DRUM LEVEL printed under it, then three lamps at y 652 —
+SOLO x+22, MUTE x+55, HIT x+88 — names centred under them at 670. Master: meter 394–588 (194 high), trim knob at
+(1018, 462), value 495, OVER 564, rule 600, HAT CHOKE 620/636, BYPASS 660. `PvLamp::setColours` added for the amber
+solo jewel (`Pv::kSoloOn/Off` = d2p.js `SOLO_LAMP`). The panel height is now `window.PANEL_H` in d2p.js, read by
+`pv.js` (`PH()`, default 640, so ForTran's copy is unaffected if back-ported) and by `render-panel.py`.
+`resource/pv_panel.png`, `pv_wear.png` and `Designs/…-2-ChannelStrips-NearlyNew.png` (the full render with the
+wear laid over it) were re-rendered in the cloud workspace; the demo mutes the crash.
+
+### Verification (from the Linux VM)
+
+All 15 `.cpp` files compile against the SDK and VSTGUI (`-Wall -Wextra`, nothing new in our code); **0
+unresolved `SampleDrum::` symbols** out of 105. `tools/run-tests.sh`: all suites pass.
+
+**DSP: 658 / 0** (578 before) — `testDrumStrips`: the rule's truth table (mute wins, two solos, out of range);
+the level law (0 dB and ±3e-6 dB exactly 1, bottom silent, clamp); cell −6 + drum −6 = −12 dB; the drum level
+reaches every row and leaves the neighbour bit-identical; muted, soloed elsewhere and undone → the file's own
+samples; at every rate 44.1–192 k and blocks of 32, 512 and 4096, a mute ramps with no step bigger than the
+ramp's, is **exactly** silent after 5 ms, and unmuted comes back at exactly unity; reset snaps the gates; a
+muted kick still sounds as a voice; a muted audition is silent; solo, two solos, solo + mute; a soloed open hat
+is still choked. **Negative controls** on throwaway copies: with the gate not applied, and with the gate jumping
+instead of ramping, the mute checks fail.
+
+**State: 35 / 0** (29 before) — a 45-parameter project reads with every strip at its defaults; drum levels default
+to exactly unity even through a float; titles, ids, switch types and the disjoint ranges.
+
+**Not verified here:** the build, the validator, `auval`, the panel on screen.
+
+### To check by hand on the Mac
+
+1. `./setup-xcode.sh --no-open` (no new files, but the two PNGs changed size), build, validator,
+   `auval -v aumu SmDr AECo`.
+2. The editor opens 700 high and nothing is offset from the printed rule, knob scales and lamp names.
+3. Turn a DRUM LEVEL: the whole column follows; the bottom reads "OFF" and is silent; Alt-click → 0 dB.
+4. MUTE a drum: silent within a beat, no click, HIT still flashes; unmute mid-cymbal: it comes back.
+5. SOLO one drum: the others' DRUM LEVEL readouts dim and go silent; solo a second: both play; mute a
+   soloed one: it goes quiet, the rest stay off.
+6. Automate a mute on the beat, and a drum level sweep: no clicks, and the lamps/knobs follow.
+7. The host's generic editor: "On"/"Off" for solo and mute; type "on" into one.
+8. Open a 1.1.0.0 project: it sounds the same, every strip at 0 dB and unlit.
+9. Record the results here. **Not yet done on the Mac** - the version was bumped first, at Andy's request.
+
+**Version: 1.2.0.0** (2026-11-17) — 24 new parameters and a taller panel; a minor bump, as 1.1.0.0 was.
+`CMakeLists.txt`, `source/version.h` and `au-info.plist` (AU `0x00010200`, integer 66048) moved together;
+`tools/check-versions.py` agrees. Notes in `installer/release-notes-1.2.0.0.md` (the 1.1.0.0 notes from
+"What it is" on, updated; the SHA-256 placeholder is for `publish-release.sh`). The installer's closing page
+mentions the drum level. The notes also say **macOS 12 or later**, following the deployment-target raise to
+12.0 for Xcode 27 (`CMakeLists.txt`, `installer/distribution.xml`'s `allowed-os-versions`), which arrived on
+this branch alongside.
+
+## 18. Factory kits: `.vstpreset` in, `.aupreset` made (2026-11-17)
+
+**Update 2026-11-18, later: the kits are a SEPARATE INSTALLER.** The plug-in's package carries no presets
+(the `PRESETS` blocks are gone from `distribution.xml`). `build-installer.sh --kits` builds
+`installer/SampleDrum-Kits-<version>.pkg`: one component into `/Library/Audio/Presets/AE Cobley/SampleDrum`,
+its own `distribution-kits.xml` (`customize="never"`, macOS 12+) and panes (`resources/welcome-kits.html`,
+`conclusion-kits.html`); no build tree, no `--sign-app` (nothing in it is code; notarising needs only the
+Installer signature), no `.built-from`; refuses with no kits or a stale `.aupreset`. `build-release.sh
+--kits`: versions agree, `make-presets.py --check`, the Installer certificate looked up alone, the notary
+profile, build, SHA-256 — no tests, tag, notes or clean-tree check, since the kits are not in git and may
+follow a release. **`publish-release.sh` does not upload it** (`gh release upload v<version> …`). The
+plug-in's `build-release.sh` now clears `$NAME-[0-9]*.pkg`, not `$NAME-*.pkg`, so it no longer deletes a
+notarised kits package. `test-build-release.sh`: 28 cases (4 new: `--kits` signs with the installer
+certificate only; refuses a missing `.aupreset`; skips the tag/clean-tree checks; the plug-in's release
+leaves a kits package alone — negative control: with the old glob that last one fails). Checked with
+`build-installer.sh` against stubbed Apple tools: the plug-in's package holds VST3 + AU and no presets; the
+kits package holds only `SampleDrum-Presets.pkg`, signs, "notarises" and passes the Gatekeeper check without
+`--sign-app`; the plug-in's still refuses to notarise an ad-hoc payload.
+
+**Update 2026-11-18:** the four KItMachine kits were replaced by **56** (808, 909, acoustic, boomy, crisp,
+distorted, dull, lo-fi, metallic, muffled, punchy, tight, vintage-drum-machine, warm; 1–4 each), all passing
+`--check`. 1,792 distinct WAVs, 405 MB embedded; with the `.aupreset` copies (base64, a third bigger) the
+folder is **about 918 MB**, so the kit files are **not in git** (`.gitignore`, Andy's call): they live in
+`installer/presets/` on the release machine and must be backed up there. `test-build-release.sh` now copies
+only the first kit's pair into each of its 24 throwaway projects, not the whole folder. The alternative not
+taken (yet): ship the WAVs once as factory samples under `/Users/Shared/SampleDrum/Samples` and regenerate the
+kits to point there, so each kit is a few KB and the installer roughly halves.
+
+Originally four kits, `installer/presets/KItMachine kit 1–4.vstpreset`, shipping as a fourth installer component,
+**Factory kits**, into `/Library/Audio/Presets/AE Cobley/SampleDrum` — ForTran's presets component, ported
+(`PRESETS_ID audio.sampledrum.presets`, `BEGIN PRESETS`/`END PRESETS` blocks in `distribution.xml`, stripped
+when the folder is empty; `verify-install.sh` §5b).
+
+**The direction is the opposite of ForTran's.** ForTran authors patches in Logic and
+`tools/make-presets.cpp` (SDK) turns `.aupreset` into `.vstpreset`. SampleDrum's kits come as `.vstpreset`, so
+**`tools/make-presets.py`** turns each into an `.aupreset`. It is the converter the release kit already
+expected: `build-release.sh` ran `tools/make-presets.py --check` *if it existed* (it never did, here or in
+ForTran — so that check had silently never run), and `test-build-release.sh`'s two preset cases now run
+(24 cases, was 22). Python, no SDK, so it runs on the VM and inside the stubbed release test.
+
+Both formats carry `SampleDrumProcessor::getState`'s bytes: the `.vstpreset`'s `Comp` chunk is copied to the
+plist's `Processor State`. The AU wrapper's `restoreState` refuses a preset unless `version` is 0 and
+`subtype`/`manufacturer` are the component's, and only hands the state to the controller when a
+`Controller State` key is **present** (an empty one is written; a missing one leaves the panel on the
+previous kit). Codes come from `au-info.plist`, the UID from `SampleDrumIDs.h`, the version from
+`SampleDrumState.h`, the factory root from `SampleDrumSample.h` — nothing retyped.
+
+**It refuses** a preset for another class UID, a state that does not parse to the end by `SampleDrumState.h`'s
+layout, and **any loaded cell with no embedded file outside the factory root** — that kit would be silent on
+every Mac but the author's. `--check` fails on a missing or stale `.aupreset`, and on an `.aupreset` with no
+`.vstpreset`. `tools/run-tests.sh` runs `--check`; so does `build-installer.sh` before packaging.
+
+**These four kits have a parameter count of 0** — written by a generator, not saved from the plug-in — which
+the reader takes as every control at its default (version 1, count 0, bypass, 32 paths, 32 embedded WAVs).
+All 32 cells carry their files; paths point into `~/AudioTools/SampleGen Library/KItMachine/`, which only
+shows in tooltips. About 4 MB each, so the presets package is about 37 MB.
+
+### Verification (from the Linux VM)
+
+- `make-presets.py`: 4 written; `--check` passes; flipping byte 70 of a `.vstpreset` (inside `Comp`) makes it
+  STALE; restoring it passes.
+- **The plug-in's own reader** (`readState` + `readEmbedded`, built against the SDK) on an `.aupreset`'s
+  `Processor State`: complete, 32 embedded files.
+- `build-installer.sh` against stubbed `pkgbuild`/`productbuild`/`pkgutil`/`codesign` and a fake build tree:
+  8 preset files packaged for the presets folder, the Distribution well-formed and every pkg-ref resolving;
+  with a stale `.aupreset` → refused; with `installer/presets` empty → the component and choice left out.
+- `tools/run-tests.sh`: all suites pass, presets included.
+
+**Not verified here:** a real package, and the kits loading in a host. On the Mac: install, then in Logic
+(AU) and in a VST3 host open each kit from the preset browser — every cell named, every cell plays, the panel
+shows the kit (not the previous one). Re-save one from Logic and check `--check` still passes for the others.

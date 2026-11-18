@@ -6,10 +6,13 @@
   panel-layout.json where every knob, selector, lamp and screen is (for wear.py)
 
 usage: render-panel.py [outdir]"""
-import sys, json, pathlib
+import sys, json, pathlib, re
 from playwright.sync_api import sync_playwright
 D = pathlib.Path(__file__).parent
 OUT = (pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else D).resolve()
+# The panel's height is d2p.js's window.PANEL_H (640 when it says nothing).
+m = re.search(r'window\.PANEL_H\s*=\s*(\d+)', (D / 'd2p.js').read_text())
+H = int(m.group(1)) if m else 640
 js = (D / 'rbfont.js').read_text() + '\n' + (D / 'pv.js').read_text() + '\n' + (D / 'sd.js').read_text() + '\n' + (D / 'd2p.js').read_text()
 with sync_playwright() as p:
     b = p.chromium.launch()
@@ -18,7 +21,7 @@ with sync_playwright() as p:
                 f'</head><body><script>window.STATIC={str(static).lower()};\n' + js + '</script></body></html>')
         f = OUT / f'{name}.html'
         f.write_text(html)
-        pg = b.new_page(viewport={'width': 1200, 'height': 640}, device_scale_factor=2)
+        pg = b.new_page(viewport={'width': 1200, 'height': H}, device_scale_factor=2)
         errs = []
         pg.on('pageerror', lambda e: errs.append(str(e)))
         pg.goto(f.as_uri()); pg.wait_for_timeout(300)
@@ -26,7 +29,7 @@ with sync_playwright() as p:
             sys.exit(f'{name}: {errs}')
         w, h = pg.evaluate('[document.body.scrollWidth, document.body.scrollHeight]')
         print(name, 'page', w, h)
-        pg.screenshot(path=str(OUT / f'{name}.png'), clip={'x': 0, 'y': 0, 'width': 1200, 'height': 640})
+        pg.screenshot(path=str(OUT / f'{name}.png'), clip={'x': 0, 'y': 0, 'width': 1200, 'height': H})
         if not static:
             (OUT / 'panel-layout.json').write_text(json.dumps(pg.evaluate('window.LAYOUT')))
         f.unlink()

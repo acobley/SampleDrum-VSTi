@@ -99,7 +99,25 @@ enum Param : Steinberg::Vst::ParamID
 	kTrebleGain,
 	kTrebleFreq,
 
-	kNumParams,
+	//--------------------------------------------------------------------
+	/** THE DRUM STRIPS - a level, a SOLO and a MUTE for each column, at
+	    the foot of its strip on the panel.
+
+	    Ids 45..52 the levels (dB, the cell levels' range and law, bottom
+	    = silence), 53..60 the solos, 61..68 the mutes (Bool), each block
+	    in column order. All automatable: a mute on the beat is exactly
+	    the kind of thing people automate. The rule that decides whether
+	    a strip sounds is stripAudible() in SampleDrumKit.h.
+
+	    Appended after the isolator, never among the earlier blocks. */
+	kDrumLevelBase,
+	kDrumLevelEnd  = kDrumLevelBase + kColumns,
+	kDrumSoloBase  = kDrumLevelEnd,
+	kDrumSoloEnd   = kDrumSoloBase + kColumns,
+	kDrumMuteBase  = kDrumSoloEnd,
+	kDrumMuteEnd   = kDrumMuteBase + kColumns,
+
+	kNumParams = kDrumMuteEnd,
 
 	//--------------------------------------------------------------------
 	/** Standard VST3 bypass.
@@ -190,7 +208,33 @@ inline double normalizedFromNote (int note)
 static_assert (kCellLevelBase == 1, "the cell levels follow the trim");
 static_assert (kColumnNoteBase == 1 + kCellCount, "the column notes follow the levels");
 static_assert (kBassGain == 1 + kCellCount + kColumns, "the isolator follows the column notes");
-static_assert (kNumParams == 1 + kCellCount + kColumns + 4, "trim + a level per cell + a note per column + the isolator");
+static_assert (kDrumLevelBase == 1 + kCellCount + kColumns + 4, "the drum strips follow the isolator");
+static_assert (kNumParams == 1 + kCellCount + kColumns + 4 + 3 * kColumns,
+               "trim + a level per cell + a note per column + the isolator + a level, solo and mute per drum");
+
+//------------------------------------------------------------------------
+// The drum strips: by range, like the cell levels
+constexpr Steinberg::Vst::ParamID drumLevelParam (int column) { return static_cast<Steinberg::Vst::ParamID> (kDrumLevelBase + column); }
+constexpr Steinberg::Vst::ParamID drumSoloParam (int column)  { return static_cast<Steinberg::Vst::ParamID> (kDrumSoloBase + column); }
+constexpr Steinberg::Vst::ParamID drumMuteParam (int column)  { return static_cast<Steinberg::Vst::ParamID> (kDrumMuteBase + column); }
+
+/** The column a drum-strip parameter belongs to, or -1 - one for each kind. */
+constexpr int columnOfDrumLevelParam (Steinberg::Vst::ParamID id)
+{
+	return (id >= static_cast<Steinberg::Vst::ParamID> (kDrumLevelBase) && id < static_cast<Steinberg::Vst::ParamID> (kDrumLevelEnd))
+	       ? static_cast<int> (id - kDrumLevelBase) : -1;
+}
+constexpr int columnOfDrumSoloParam (Steinberg::Vst::ParamID id)
+{
+	return (id >= static_cast<Steinberg::Vst::ParamID> (kDrumSoloBase) && id < static_cast<Steinberg::Vst::ParamID> (kDrumSoloEnd))
+	       ? static_cast<int> (id - kDrumSoloBase) : -1;
+}
+constexpr int columnOfDrumMuteParam (Steinberg::Vst::ParamID id)
+{
+	return (id >= static_cast<Steinberg::Vst::ParamID> (kDrumMuteBase) && id < static_cast<Steinberg::Vst::ParamID> (kDrumMuteEnd))
+	       ? static_cast<int> (id - kDrumMuteBase) : -1;
+}
+constexpr bool isDrumLevelParam (Steinberg::Vst::ParamID id) { return columnOfDrumLevelParam (id) >= 0; }
 
 constexpr bool isIsolatorParam (Steinberg::Vst::ParamID id)
 {

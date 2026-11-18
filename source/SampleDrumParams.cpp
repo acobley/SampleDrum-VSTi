@@ -96,6 +96,39 @@ const ParamDef kParams[kNumParams] = {
 	{kBassFreq,   "Bass Freq",   "Hz", ParamType::LogFloat, kBassHzMin,     kBassHzMax,     kBassHzDefault,     kBassHzMin,     kBassHzMax,     0, true },
 	{kTrebleGain, "Treble",      "dB", ParamType::Float,    kIsolatorMinDb, kIsolatorMaxDb, kIsolatorDefaultDb, kIsolatorMinDb, kIsolatorMaxDb, 0, true },
 	{kTrebleFreq, "Treble Freq", "Hz", ParamType::LogFloat, kTrebleHzMin,   kTrebleHzMax,   kTrebleHzDefault,   kTrebleHzMin,   kTrebleHzMax,   0, true },
+
+	//--------------------------------------------------------------------
+	// THE DRUM STRIPS. A level per drum - the strip's knob, after the
+	// cell levels, the same range and law - then a SOLO per drum, then a
+	// MUTE per drum, each in column order. Titled "<drum> Level" (no
+	// band), "<drum> Solo", "<drum> Mute". Internal == plain.
+	//--------------------------------------------------------------------
+	{drumLevelParam (0), "Kick Level",      "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (1), "Snare Level",     "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (2), "Clap Level",      "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (3), "Closed HH Level", "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (4), "Open HH Level",   "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (5), "Low Tom Level",   "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (6), "High Tom Level",  "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+	{drumLevelParam (7), "Crash Level",     "dB", ParamType::Float, kDrumLevelMinDb, kDrumLevelMaxDb, kDrumLevelDefaultDb, kDrumLevelMinDb, kDrumLevelMaxDb, 0, true },
+
+	{drumSoloParam  (0), "Kick Solo",       "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (1), "Snare Solo",      "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (2), "Clap Solo",       "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (3), "Closed HH Solo",  "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (4), "Open HH Solo",    "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (5), "Low Tom Solo",    "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (6), "High Tom Solo",   "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumSoloParam  (7), "Crash Solo",      "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+
+	{drumMuteParam  (0), "Kick Mute",       "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (1), "Snare Mute",      "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (2), "Clap Mute",       "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (3), "Closed HH Mute",  "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (4), "Open HH Mute",    "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (5), "Low Tom Mute",    "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (6), "High Tom Mute",   "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
+	{drumMuteParam  (7), "Crash Mute",      "",   ParamType::Bool,  0., 1., 0., 0., 1., 1, false},
 };
 
 //------------------------------------------------------------------------

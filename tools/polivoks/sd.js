@@ -28,6 +28,12 @@ const LEVELS = [ // dB per cell, -40..+12; 0 = unity
   [0, 0, -2, 0, -1, -1, -1, -2], [1.5, 1, 0, 1, 0, 0, 0, 0],
 ];
 const levelFrac = db => (db + 40) / 52;
+// The drum strips' demo (PORTING-NOTES §17): a level per drum, and which are
+// soloed / muted. The crash is muted in the mock-up, so its level reads dim.
+const DRUM_DB = [-2.0, 0.0, -4.0, -3.0, -1.5, 0.0, 0.0, -6.0];
+const SOLO = [0, 0, 0, 0, 0, 0, 0, 0], MUTE = [0, 0, 0, 0, 0, 0, 0, 1];
+// The solo lamp's jewel: amber where the mute and hit lamps are red.
+const SOLO_LAMP = { on: '#ffb81c', off: '#3a2a0c' };
 const loaded = (c, r) => !!FILES[r][c];
 // which row an empty cell borrows from
 function fallback(c, r) {
