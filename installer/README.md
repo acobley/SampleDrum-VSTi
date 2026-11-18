@@ -7,7 +7,8 @@
 
 as two separately choosable components, so somebody who only wants one format
 gets only that one — plus, when `samples/` has any `.wav` in it, the factory
-samples (see *Factory samples* below).
+samples (see *Factory samples* below), and when `installer/presets/` has any
+presets, the factory kits (see *Factory kits* below).
 
 ## Releasing: two scripts, and what they refuse to do
 
@@ -393,6 +394,60 @@ Three things worth knowing:
   inside the same notarised archive, owned by root and readable by everyone.
 
 `samples/README.md` says how to build a demo project that travels.
+
+## Factory kits (presets)
+
+Kits are **authored in a VST3 host** — load the samples, set the levels, save
+a `.vstpreset` — and dropped into `installer/presets/`. The Audio Unit's copy
+is mechanical:
+
+```sh
+tools/make-presets.py            # .vstpreset -> .aupreset, for everything in installer/presets/
+tools/make-presets.py --check    # change nothing; fail if any .aupreset is missing or stale
+```
+
+Both formats carry the same thing: the bytes `SampleDrumProcessor::getState`
+wrote. A `.vstpreset` holds them as its `Comp` chunk, and the AU wrapper keeps
+them in the `.aupreset` plist under `Processor State` (`auwrapper.mm`,
+`SaveState`/`restoreState`), so the tool copies one into the other. Nothing is
+re-derived, so a kit cannot sound different in Logic and in Cubase. This is
+**ForTran's mechanism run the other way**: ForTran's patches are authored in
+Logic, and its `tools/make-presets.cpp` turns `.aupreset` into `.vstpreset`.
+
+Both files are **kept out of git** (`.gitignore`): 56 kits that each carry
+their samples come to about 918 MB. They live in `installer/presets/` on the
+machine that builds the release, so **back that folder up** — a release
+commit does not record which kits went into the package. Both are installed by
+a fourth component,
+**Factory kits**, into
+
+    /Library/Audio/Presets/AE Cobley/SampleDrum
+
+which is the folder *each* format looks in: VST3 uses `$COMPANY/$PLUGIN-NAME`
+and an Audio Unit uses `<manufacturer>/<plug-in>` from the component's name,
+"AE Cobley: SampleDrum".
+
+What is checked, by `make-presets.py`, by `tools/run-tests.sh`, by
+`build-installer.sh` before it packages anything, and by `build-release.sh`:
+
+- **The class ID** is SampleDrum's processor UID (read from
+  `SampleDrumIDs.h`). A host silently ignores a `.vstpreset` whose UID does not
+  match, so these files are married to that UID.
+- **The state parses** all the way through, by `SampleDrumState.h`'s layout,
+  and its parameter count is reported. A kit with fewer parameters than the
+  build — or none at all, as a generated kit has — loads with the rest at
+  their defaults.
+- **Every loaded cell carries its file**, or is factory content under
+  `/Users/Shared/SampleDrum/Samples`. A cell with only a path would be silent
+  on any Mac but the author's, so the kit is refused. Kits therefore weigh a
+  few MB each, twice (once per format).
+- **The `.aupreset` carries byte-identical state**, the right
+  type/subtype/manufacturer (from `au-info.plist`), `version` 0 and a
+  `Controller State` key, even empty. Without that key the wrapper never hands
+  the state to the controller and the panel shows the previous kit.
+
+`installer/presets` empty is not an error: the component and every
+`BEGIN PRESETS`/`END PRESETS` block are left out.
 
 ## Before handing it to a tester
 

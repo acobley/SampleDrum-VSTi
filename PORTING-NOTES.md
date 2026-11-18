@@ -509,7 +509,7 @@ ForTran's presets. **Read `installer/README.md`**; this is only what differs.
 | File | From | Changed |
 |---|---|---|
 | `build-installer.sh` | ForTran | names/ids; presets → **samples**: every `.wav` under `samples/` (sub-folders kept) → `SampleDrum-Samples.pkg` → `/Users/Shared/SampleDrum/Samples`, `--ownership recommended`; refuses if that is not `kFactorySampleRoot` in `SampleDrumSample.h`; `BEGIN SAMPLES`/`END SAMPLES` blocks stripped from the distribution when there are none. `root-samples` always exists, so the symlink guard scans it — ForTran's `${PRESET_COUNT:+…}` passed a missing directory to `find` (harmless there; worth fixing). |
-| `build-release.sh`, `publish-release.sh`, `test-build-release.sh`, `test-publish.sh` | ForTran | **none** — they read `NAME=` from `build-installer.sh`. The preset step is skipped (no `tools/make-presets.py`). Notary profile: `project6-notary`, shared by every plug-in. |
+| `build-release.sh`, `publish-release.sh`, `test-build-release.sh`, `test-publish.sh` | ForTran | **none** — they read `NAME=` from `build-installer.sh`. The preset step was skipped until §18 added `tools/make-presets.py`. Notary profile: `project6-notary`, shared by every plug-in. |
 | `verify-install.sh` | ForTran | names, `auval -v aumu SmDr AECo`; section 5 checks the factory samples are there and readable by every user. |
 | `distribution.xml`, `resources/*.html`, `scripts-au/postinstall` | ForTran / Project6 | SampleDrum's prose: the +6 dBFS summing, velocity picks the row, samples embedded. No REAPER/pitch-wheel/Level-knob text carried over. |
 | `release-notes-1.0.0.0.md` | new | `SHA-256: <paste from: …>` placeholder, filled by `publish-release.sh`. Assumes **no factory samples** ship; if `samples/` gets any, add them to *Installing* and *Uninstalling*. |
@@ -843,3 +843,58 @@ to exactly unity even through a float; titles, ids, switch types and the disjoin
 mentions the drum level. The notes also say **macOS 12 or later**, following the deployment-target raise to
 12.0 for Xcode 27 (`CMakeLists.txt`, `installer/distribution.xml`'s `allowed-os-versions`), which arrived on
 this branch alongside.
+
+## 18. Factory kits: `.vstpreset` in, `.aupreset` made (2026-11-17)
+
+**Update 2026-11-18:** the four KItMachine kits were replaced by **56** (808, 909, acoustic, boomy, crisp,
+distorted, dull, lo-fi, metallic, muffled, punchy, tight, vintage-drum-machine, warm; 1–4 each), all passing
+`--check`. 1,792 distinct WAVs, 405 MB embedded; with the `.aupreset` copies (base64, a third bigger) the
+folder is **about 918 MB**, so the kit files are **not in git** (`.gitignore`, Andy's call): they live in
+`installer/presets/` on the release machine and must be backed up there. `test-build-release.sh` now copies
+only the first kit's pair into each of its 24 throwaway projects, not the whole folder. The alternative not
+taken (yet): ship the WAVs once as factory samples under `/Users/Shared/SampleDrum/Samples` and regenerate the
+kits to point there, so each kit is a few KB and the installer roughly halves.
+
+Originally four kits, `installer/presets/KItMachine kit 1–4.vstpreset`, shipping as a fourth installer component,
+**Factory kits**, into `/Library/Audio/Presets/AE Cobley/SampleDrum` — ForTran's presets component, ported
+(`PRESETS_ID audio.sampledrum.presets`, `BEGIN PRESETS`/`END PRESETS` blocks in `distribution.xml`, stripped
+when the folder is empty; `verify-install.sh` §5b).
+
+**The direction is the opposite of ForTran's.** ForTran authors patches in Logic and
+`tools/make-presets.cpp` (SDK) turns `.aupreset` into `.vstpreset`. SampleDrum's kits come as `.vstpreset`, so
+**`tools/make-presets.py`** turns each into an `.aupreset`. It is the converter the release kit already
+expected: `build-release.sh` ran `tools/make-presets.py --check` *if it existed* (it never did, here or in
+ForTran — so that check had silently never run), and `test-build-release.sh`'s two preset cases now run
+(24 cases, was 22). Python, no SDK, so it runs on the VM and inside the stubbed release test.
+
+Both formats carry `SampleDrumProcessor::getState`'s bytes: the `.vstpreset`'s `Comp` chunk is copied to the
+plist's `Processor State`. The AU wrapper's `restoreState` refuses a preset unless `version` is 0 and
+`subtype`/`manufacturer` are the component's, and only hands the state to the controller when a
+`Controller State` key is **present** (an empty one is written; a missing one leaves the panel on the
+previous kit). Codes come from `au-info.plist`, the UID from `SampleDrumIDs.h`, the version from
+`SampleDrumState.h`, the factory root from `SampleDrumSample.h` — nothing retyped.
+
+**It refuses** a preset for another class UID, a state that does not parse to the end by `SampleDrumState.h`'s
+layout, and **any loaded cell with no embedded file outside the factory root** — that kit would be silent on
+every Mac but the author's. `--check` fails on a missing or stale `.aupreset`, and on an `.aupreset` with no
+`.vstpreset`. `tools/run-tests.sh` runs `--check`; so does `build-installer.sh` before packaging.
+
+**These four kits have a parameter count of 0** — written by a generator, not saved from the plug-in — which
+the reader takes as every control at its default (version 1, count 0, bypass, 32 paths, 32 embedded WAVs).
+All 32 cells carry their files; paths point into `~/AudioTools/SampleGen Library/KItMachine/`, which only
+shows in tooltips. About 4 MB each, so the presets package is about 37 MB.
+
+### Verification (from the Linux VM)
+
+- `make-presets.py`: 4 written; `--check` passes; flipping byte 70 of a `.vstpreset` (inside `Comp`) makes it
+  STALE; restoring it passes.
+- **The plug-in's own reader** (`readState` + `readEmbedded`, built against the SDK) on an `.aupreset`'s
+  `Processor State`: complete, 32 embedded files.
+- `build-installer.sh` against stubbed `pkgbuild`/`productbuild`/`pkgutil`/`codesign` and a fake build tree:
+  8 preset files packaged for the presets folder, the Distribution well-formed and every pkg-ref resolving;
+  with a stale `.aupreset` → refused; with `installer/presets` empty → the component and choice left out.
+- `tools/run-tests.sh`: all suites pass, presets included.
+
+**Not verified here:** a real package, and the kits loading in a host. On the Mac: install, then in Logic
+(AU) and in a VST3 host open each kit from the preset browser — every cell named, every cell plays, the panel
+shows the kit (not the previous one). Re-save one from Logic and check `--check` still passes for the others.

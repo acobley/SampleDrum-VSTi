@@ -29,3 +29,11 @@ installer/.built-from
 *.pfx
 *.p8
 AuthKey_*
+
+# THE FACTORY KITS ARE NOT IN GIT. 56 kits, each carrying its own 32 WAVs,
+# twice (.vstpreset, and the .aupreset tools/make-presets.py makes from it):
+# about 918 MB, against a repository of a few MB. They live only in
+# installer/presets on the machine that builds the release; build-installer.sh
+# packages whatever is there, after make-presets.py --check. Back them up.
+installer/presets/*.vstpreset
+installer/presets/*.aupreset

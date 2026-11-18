@@ -19,6 +19,7 @@ VST3="/Library/Audio/Plug-Ins/VST3/$NAME.vst3"
 AU="/Library/Audio/Plug-Ins/Components/$NAME.component"
 NESTED="$AU/Contents/Resources/plugin.vst3"
 SAMPLES="/Users/Shared/SampleDrum/Samples"
+PRESETS="/Library/Audio/Presets/AE Cobley/$NAME"
 
 FAILED=0
 pass () { printf '  ok    %s\n' "$1"; }
@@ -143,6 +144,28 @@ if [ -d "$SAMPLES" ]; then
     fi
 else
     note "no factory samples installed - either none were packaged, or the"
+    note "  choice was turned off during the install"
+fi
+
+#-----------------------------------------------------------------------------
+echo
+echo "5b. Factory kits (presets)"
+#-----------------------------------------------------------------------------
+# One folder serves both formats: VST3 reads $COMPANY/$PLUGIN-NAME, and the
+# Audio Unit reads <manufacturer>/<plug-in> from the component's name, which
+# is the same path. Optional, like the samples - but a partial set means the
+# component package went wrong.
+if [ -d "$PRESETS" ]; then
+    vst3Presets=$(ls "$PRESETS"/*.vstpreset 2>/dev/null | wc -l | tr -d ' ')
+    auPresets=$(ls "$PRESETS"/*.aupreset 2>/dev/null | wc -l | tr -d ' ')
+    pass "$PRESETS"
+    note "$vst3Presets .vstpreset, $auPresets .aupreset"
+    if [ "$vst3Presets" -ne "$auPresets" ]; then
+        fail "the two formats have different numbers of kits"
+        note "every kit should ship as both, or one format is short"
+    fi
+else
+    note "no factory kits installed - either none were packaged, or the"
     note "  choice was turned off during the install"
 fi
 

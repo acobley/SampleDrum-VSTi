@@ -70,6 +70,14 @@ else
 	printf '\n===== state-tests\nskipped - no VST3 SDK at external/vst3sdk yet.\nRun ./setup-xcode.sh once to fetch it.\n'
 fi
 
+# The factory kits: every .vstpreset parses as a SampleDrum kit whose cells
+# all carry their files, and its .aupreset carries the same state. Python and
+# no SDK, so it runs everywhere; build-release.sh runs the same --check.
+if ls "$ROOT"/installer/presets/*.vstpreset >/dev/null 2>&1; then
+	printf '\n===== presets\n'
+	python3 "$ROOT/tools/make-presets.py" --check || { echo "FAILED: presets" >&2; FAILED=$((FAILED + 1)); }
+fi
+
 #-----------------------------------------------------------------------------
 # The release kit: the version and maker's name agree everywhere, and the
 # release scripts' own refusals still refuse. None of this needs a Mac.

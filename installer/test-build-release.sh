@@ -70,8 +70,28 @@ setup () {
     rm -rf "$TMP/proj"; mkdir -p "$TMP/proj"
     # Plain cp, not rsync: macOS 15 replaced rsync with openrsync.
     for f in .gitignore CMakeLists.txt README.md source resource tools installer; do
+        [ "$f" = installer ] && continue
         [ -e "$ROOT/$f" ] && cp -R "$ROOT/$f" "$TMP/proj/"
     done
+    # The installer folder WITHOUT the factory kits - SampleDrum's are about
+    # 918 MB, and this runs 24 times - then the first kit's pair, which is all
+    # the preset cases below need.
+    mkdir -p "$TMP/proj/installer"
+    for f in "$ROOT/installer/"* "$ROOT/installer/".[!.]*; do
+        [ -e "$f" ] || continue
+        [ "$(basename "$f")" = presets ] && continue
+        cp -R "$f" "$TMP/proj/installer/"
+    done
+    if [ -d "$ROOT/installer/presets" ]; then
+        mkdir -p "$TMP/proj/installer/presets"
+        first="$(ls "$ROOT/installer/presets/"*.vstpreset 2>/dev/null | head -1)"
+        if [ -n "$first" ]; then
+            cp "$first" "${first%.vstpreset}.aupreset" "$TMP/proj/installer/presets/" 2>/dev/null || true
+        fi
+        for f in "$ROOT/installer/presets/"*; do
+            case "$f" in *.vstpreset|*.aupreset) ;; *) [ -e "$f" ] && cp -R "$f" "$TMP/proj/installer/presets/" ;; esac
+        done
+    fi
     mkdir -p "$TMP/proj/tools"
     cd "$TMP/proj" || exit 2
     rm -f installer/*.pkg installer/.built-from

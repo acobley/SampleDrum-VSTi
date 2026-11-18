@@ -15,7 +15,9 @@
 #
 # as two separately choosable components, so somebody who only wants one
 # format gets only that one - and, when samples/ has any .wav files in it, a
-# third: the factory samples, into /Users/Shared/SampleDrum/Samples.
+# third: the factory samples, into /Users/Shared/SampleDrum/Samples - and,
+# when installer/presets has any, a fourth: the factory kits, as .vstpreset
+# and .aupreset, into /Library/Audio/Presets/AE Cobley/SampleDrum.
 #
 # SIGNING - read this before sending the result to anyone:
 #
@@ -47,6 +49,13 @@ NAME="SampleDrum"
 VST3_ID="audio.sampledrum.vst3"
 AU_ID="audio.sampledrum.audiounit"
 SAMPLES_ID="audio.sampledrum.samples"
+PRESETS_ID="audio.sampledrum.presets"
+
+# Where both formats look for factory presets, and it is the same folder for
+# each: VST3 uses $COMPANY/$PLUGIN-NAME (Steinberg's Preset Locations), and
+# an Audio Unit uses <manufacturer>/<plug-in> taken from the component's name
+# - "AE Cobley: SampleDrum" - which lands in the same place. (ForTran's.)
+PRESETS_DIR="/Library/Audio/Presets/AE Cobley/$NAME"
 
 # THE FACTORY SAMPLE FOLDER. Must be the same string as kFactorySampleRoot in
 # source/SampleDrumSample.h - a cell is recognised as factory by that prefix,
@@ -193,11 +202,38 @@ if [ -d "$ROOT/samples" ]; then
     done < <(find "$ROOT/samples" -type f -iname '*.wav' -print0)
 fi
 
+# THE FACTORY KITS, if there are any. The .aupreset files are MADE from the
+# .vstpreset ones by tools/make-presets.py; a stale or missing one would ship
+# the Audio Unit a different kit from the VST3, so that is refused here as
+# well as in build-release.sh. A project with no presets still builds - the
+# choice simply does not appear.
+PRESET_COUNT=0
+if [ -d "$HERE/presets" ]; then
+    PRESET_COUNT=$(find "$HERE/presets" -maxdepth 1 -type f \( -name '*.vstpreset' -o -name '*.aupreset' \) | wc -l | tr -d ' ')
+fi
+mkdir -p "$WORK/root-presets"
+if [ "$PRESET_COUNT" -gt 0 ]; then
+    python3 "$ROOT/tools/make-presets.py" --check >/dev/null || {
+        echo "build-installer: installer/presets/*.aupreset are missing or stale." >&2
+        echo "                 Run tools/make-presets.py and build again." >&2
+        exit 1
+    }
+    # The CONTENTS, not the folder: the install location is already the
+    # per-plug-in directory, so copying the folder itself would give
+    # .../SampleDrum/presets/*.vstpreset and no host would look there.
+    cp "$HERE/presets/"*.vstpreset "$HERE/presets/"*.aupreset "$WORK/root-presets/" 2>/dev/null || true
+fi
+
 echo "==> SampleDrum $VERSION, from $CONFIG"
 if [ "$SAMPLE_COUNT" -gt 0 ]; then
     echo "==> $SAMPLE_COUNT factory sample(s) staged for $SAMPLES_DEST"
 else
     echo "==> no factory samples in samples/ - that component is left out"
+fi
+if [ "$PRESET_COUNT" -gt 0 ]; then
+    echo "==> $PRESET_COUNT factory preset file(s) staged for $PRESETS_DIR"
+else
+    echo "==> no presets in installer/presets - that component is left out"
 fi
 
 #-----------------------------------------------------------------------------
@@ -247,7 +283,7 @@ while IFS= read -r link; do
         /*) escapes="$escapes
   $link -> $target" ;;
     esac
-done < <(find "$WORK/root-vst3" "$WORK/root-au" "$WORK/root-samples" -type l)
+done < <(find "$WORK/root-vst3" "$WORK/root-au" "$WORK/root-samples" "$WORK/root-presets" -type l)
 
 if [ -n "$escapes" ]; then
     echo "build-installer: absolute symlinks in the payload - these point at THIS" >&2
@@ -341,6 +377,19 @@ if [ "$SAMPLE_COUNT" -gt 0 ]; then
     echo "==> $SAMPLE_COUNT sample file(s) packaged for $SAMPLES_DEST"
 fi
 
+# The presets: data again, unsigned, inside the notarised archive. Each kit
+# carries its own samples, so these are a few MB apiece.
+if [ "$PRESET_COUNT" -gt 0 ]; then
+    pkgbuild --quiet \
+        --root "$WORK/root-presets" \
+        --identifier "$PRESETS_ID.pkg" \
+        --version "$VERSION" \
+        --install-location "$PRESETS_DIR" \
+        --ownership recommended \
+        "$WORK/pkgs/$NAME-Presets.pkg"
+    echo "==> $PRESET_COUNT preset file(s) packaged for $PRESETS_DIR"
+fi
+
 echo "==> component packages built"
 
 #-----------------------------------------------------------------------------
@@ -362,6 +411,11 @@ if [ "$SAMPLE_COUNT" -eq 0 ]; then
     sed '/BEGIN SAMPLES/,/END SAMPLES/d' "$WORK/distribution.xml" > "$WORK/distribution-trimmed.xml"
     mv "$WORK/distribution-trimmed.xml" "$WORK/distribution.xml"
     echo "==> no samples, so the samples choice is not in the distribution"
+fi
+if [ "$PRESET_COUNT" -eq 0 ]; then
+    sed '/BEGIN PRESETS/,/END PRESETS/d' "$WORK/distribution.xml" > "$WORK/distribution-trimmed.xml"
+    mv "$WORK/distribution-trimmed.xml" "$WORK/distribution.xml"
+    echo "==> no presets, so the presets choice is not in the distribution"
 fi
 
 #-----------------------------------------------------------------------------
@@ -528,6 +582,9 @@ echo "    Installs:  /Library/Audio/Plug-Ins/VST3/$NAME.vst3"
 echo "               /Library/Audio/Plug-Ins/Components/$NAME.component"
 if [ "$SAMPLE_COUNT" -gt 0 ]; then
 echo "               $SAMPLES_DEST ($SAMPLE_COUNT files)"
+fi
+if [ "$PRESET_COUNT" -gt 0 ]; then
+echo "               $PRESETS_DIR ($PRESET_COUNT files)"
 fi
 echo
 echo "    Check what is really in it with:"
